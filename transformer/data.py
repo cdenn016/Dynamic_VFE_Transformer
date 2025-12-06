@@ -57,6 +57,54 @@ HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
 # =============================================================================
 WIKITEXT2_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip"
 
+
+def _download_with_redirect(url: str, dest_path: Path) -> None:
+    """
+    Download a file, following HTTP redirects.
+
+    urllib.request.urlretrieve doesn't handle redirects properly,
+    so we use urlopen which does follow redirects by default.
+    """
+    import ssl
+    import shutil
+
+    # Create SSL context that handles HTTPS
+    ssl_context = ssl.create_default_context()
+
+    # Create a request with a user agent (some servers require this)
+    request = urllib.request.Request(
+        url,
+        headers={'User-Agent': 'Mozilla/5.0 (WikiText-2 download)'}
+    )
+
+    print(f"  Connecting to {url}...")
+
+    try:
+        # urlopen follows redirects automatically
+        with urllib.request.urlopen(request, context=ssl_context, timeout=60) as response:
+            # Get the final URL after redirects
+            final_url = response.geturl()
+            if final_url != url:
+                print(f"  Redirected to: {final_url}")
+
+            # Get content length if available
+            content_length = response.headers.get('Content-Length')
+            if content_length:
+                print(f"  File size: {int(content_length) / 1024 / 1024:.1f} MB")
+
+            # Download to file
+            print(f"  Downloading...")
+            with open(dest_path, 'wb') as f:
+                shutil.copyfileobj(response, f)
+
+        print(f"  Download complete: {dest_path}")
+
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP Error {e.code}: {e.reason} - URL: {url}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"URL Error: {e.reason} - URL: {url}")
+
+
 def _download_wikitext2_fallback(cache_dir: Optional[str] = None) -> dict:
     """
     Download WikiText-2 directly from source (fallback when datasets unavailable).
@@ -76,7 +124,7 @@ def _download_wikitext2_fallback(cache_dir: Optional[str] = None) -> dict:
     # Download if not exists
     if not extract_dir.exists():
         print(f"Downloading WikiText-2 from {WIKITEXT2_URL}...")
-        urllib.request.urlretrieve(WIKITEXT2_URL, zip_path)
+        _download_with_redirect(WIKITEXT2_URL, zip_path)
 
         print(f"Extracting to {extract_dir}...")
         with zipfile.ZipFile(zip_path, 'r') as z:
