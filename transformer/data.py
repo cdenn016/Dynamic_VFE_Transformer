@@ -29,14 +29,26 @@ from typing import Tuple, Optional, Dict, List
 import numpy as np
 from pathlib import Path
 
-# HuggingFace datasets and tokenizers
+# HuggingFace datasets (required for data loading)
 try:
     from datasets import load_dataset
-    from transformers import AutoTokenizer
-    HF_AVAILABLE = True
+    DATASETS_AVAILABLE = True
 except ImportError:
-    HF_AVAILABLE = False
-    print("Warning: transformers/datasets not available. Install via requirements.txt")
+    DATASETS_AVAILABLE = False
+    print("Warning: datasets not available. Install: pip install datasets")
+
+# Transformers (optional - only needed for BPE tokenization)
+try:
+    from transformers import AutoTokenizer
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    # Only warn if datasets is available but transformers isn't
+    if DATASETS_AVAILABLE:
+        print("Note: transformers not available. Character-level training still works.")
+
+# Legacy compatibility
+HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
 
 
 class WikiText2Dataset(Dataset):
@@ -72,7 +84,8 @@ class WikiText2Dataset(Dataset):
             tokenizer_name: HuggingFace tokenizer name
             cache_dir: Optional cache directory for dataset
         """
-        assert HF_AVAILABLE, "datasets and transformers required! pip install -r requirements.txt"
+        assert DATASETS_AVAILABLE, "datasets required! pip install datasets"
+        assert TRANSFORMERS_AVAILABLE, "transformers required for BPE tokenization! pip install transformers"
 
         self.split = split
         self.max_seq_len = max_seq_len
@@ -235,7 +248,7 @@ class WikiText2CharDataset(Dataset):
             vocab_size: Maximum vocabulary size (default 256 for extended ASCII)
             cache_dir: Optional cache directory for dataset
         """
-        assert HF_AVAILABLE, "datasets required! pip install -r requirements.txt"
+        assert DATASETS_AVAILABLE, "datasets required! pip install datasets"
 
         self.split = split
         self.max_seq_len = max_seq_len
@@ -369,10 +382,10 @@ def create_char_dataloaders(
         ...     vocab_size=256,
         ... )
     """
-    if not HF_AVAILABLE:
+    if not DATASETS_AVAILABLE:
         raise ImportError(
             "datasets required!\n"
-            "Install: pip install -r transformer/requirements.txt"
+            "Install: pip install datasets"
         )
 
     print("="*70)
@@ -464,11 +477,10 @@ def create_dataloaders(
         ...     logits = model(input_ids)
         ...     loss = criterion(logits, target_ids)
     """
-    if not HF_AVAILABLE:
-        raise ImportError(
-            "datasets and transformers required!\n"
-            "Install: pip install -r transformer/requirements.txt"
-        )
+    if not DATASETS_AVAILABLE:
+        raise ImportError("datasets required! pip install datasets")
+    if not TRANSFORMERS_AVAILABLE:
+        raise ImportError("transformers required for BPE tokenization! pip install transformers")
 
     print("="*70)
     print("CREATING WIKITEXT-2 DATALOADERS")
@@ -554,9 +566,9 @@ if __name__ == '__main__':
     print("DATA PIPELINE TEST")
     print("="*70)
 
-    if not HF_AVAILABLE:
-        print("\n❌ transformers/datasets not installed!")
-        print("Install: pip install -r transformer/requirements.txt")
+    if not DATASETS_AVAILABLE:
+        print("\n❌ datasets not installed!")
+        print("Install: pip install datasets")
         exit(1)
 
     # Test configuration (small for quick testing)
