@@ -593,9 +593,15 @@ class LeapfrogIntegrator(nn.Module):
         V, _ = self.potential(temp_state, mu_prior, Sigma_prior, beta, targets, W_out)
         V_sum = V.sum()
 
-        # Compute gradients
-        grads = torch.autograd.grad(V_sum, [mu, Sigma, phi], create_graph=False)
-        grad_mu, grad_Sigma, grad_phi = grads
+        # Compute gradients (allow_unused for phi when alignment disabled)
+        grads = torch.autograd.grad(
+            V_sum, [mu, Sigma, phi],
+            create_graph=False,
+            allow_unused=True
+        )
+        grad_mu = grads[0] if grads[0] is not None else torch.zeros_like(state.mu)
+        grad_Sigma = grads[1] if grads[1] is not None else torch.zeros_like(state.Sigma)
+        grad_phi = grads[2] if grads[2] is not None else torch.zeros_like(state.phi)
 
         # Momentum updates: p ← p - dt · ∂V/∂q
         pi_mu_new = state.pi_mu - dt * grad_mu.detach()
