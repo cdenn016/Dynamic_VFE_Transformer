@@ -502,6 +502,10 @@ class Thermostat(nn.Module):
 # =============================================================================
 
 if __name__ == '__main__':
+    # Fix OpenMP issue on Windows/Anaconda
+    import os
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
     print("=" * 70)
     print("THERMOSTAT TEST")
     print("=" * 70)

@@ -923,7 +923,27 @@ class HamiltonianFFN(nn.Module):
 # Testing
 # =============================================================================
 
+def _make_so3_generators_for_test(K: int) -> torch.Tensor:
+    """
+    Create random skew-symmetric generators for testing.
+
+    For proper SO(3) irreps, use math_utils.generators.generate_so3_generators.
+    This is a simplified version for self-contained testing.
+    """
+    # Create 3 random skew-symmetric matrices as generators
+    generators = []
+    for _ in range(3):
+        A = torch.randn(K, K)
+        G = 0.5 * (A - A.T)  # Skew-symmetric
+        generators.append(G)
+    return torch.stack(generators, dim=0)  # (3, K, K)
+
+
 if __name__ == '__main__':
+    # Fix OpenMP issue on Windows/Anaconda
+    import os
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
     print("=" * 70)
     print("HAMILTONIAN FFN TEST")
     print("=" * 70)
@@ -937,9 +957,8 @@ if __name__ == '__main__':
     print(f"    Latent dim: {K}")
 
     # Create SO(3) generators for K-dimensional irrep
-    # For K=5, this is the ℓ=2 irrep
-    from math_utils.generators import generate_so3_generators
-    generators = torch.tensor(generate_so3_generators(K), dtype=torch.float32)
+    # Using simplified test generators (for proper irreps, use math_utils.generators)
+    generators = _make_so3_generators_for_test(K)
     print(f"    Generators shape: {generators.shape}")
 
     # Create test data
