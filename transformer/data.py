@@ -36,9 +36,17 @@ import zipfile
 try:
     from datasets import load_dataset
     DATASETS_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     DATASETS_AVAILABLE = False
     load_dataset = None  # Will use fallback
+    # Debug: show why import failed
+    import sys
+    print(f"[DEBUG] datasets import failed: {e}")
+    print(f"[DEBUG] Python executable: {sys.executable}")
+except Exception as e:
+    DATASETS_AVAILABLE = False
+    load_dataset = None
+    print(f"[DEBUG] datasets import error: {type(e).__name__}: {e}")
 
 # Transformers (optional - only needed for BPE tokenization)
 try:
@@ -55,54 +63,82 @@ HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
 # =============================================================================
 # Fallback: Download WikiText-2 directly (no datasets package needed)
 # =============================================================================
-WIKITEXT2_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip"
+# Multiple mirror URLs in case one fails
+WIKITEXT2_URLS = [
+    # HuggingFace datasets mirror (most reliable)
+    "https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/wikitext-2-raw-v1.zip",
+    # Alternative: raw.githubusercontent mirror
+    "https://raw.githubusercontent.com/pcy190/wikitext/main/wikitext-2-raw-v1.zip",
+    # Original S3 (deprecated, may not work)
+    "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip",
+]
 
 
-def _download_with_redirect(url: str, dest_path: Path) -> None:
+def _download_with_redirect(url: str, dest_path: Path) -> bool:
     """
     Download a file, following HTTP redirects.
 
-    urllib.request.urlretrieve doesn't handle redirects properly,
-    so we use urlopen which does follow redirects by default.
+    Returns True on success, False on failure.
     """
     import ssl
     import shutil
+    import http.client
 
     # Create SSL context that handles HTTPS
     ssl_context = ssl.create_default_context()
 
-    # Create a request with a user agent (some servers require this)
+    # Create a request with a browser-like user agent
     request = urllib.request.Request(
         url,
-        headers={'User-Agent': 'Mozilla/5.0 (WikiText-2 download)'}
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*',
+        }
     )
 
-    print(f"  Connecting to {url}...")
+    print(f"  Trying: {url[:60]}...")
 
     try:
-        # urlopen follows redirects automatically
-        with urllib.request.urlopen(request, context=ssl_context, timeout=60) as response:
+        # Create opener that handles redirects
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPRedirectHandler(),
+            urllib.request.HTTPSHandler(context=ssl_context)
+        )
+
+        with opener.open(request, timeout=120) as response:
             # Get the final URL after redirects
             final_url = response.geturl()
             if final_url != url:
-                print(f"  Redirected to: {final_url}")
+                print(f"  Redirected to: {final_url[:60]}...")
 
             # Get content length if available
             content_length = response.headers.get('Content-Length')
             if content_length:
-                print(f"  File size: {int(content_length) / 1024 / 1024:.1f} MB")
+                size_mb = int(content_length) / 1024 / 1024
+                print(f"  File size: {size_mb:.1f} MB")
 
-            # Download to file
+            # Download to file with progress
             print(f"  Downloading...")
             with open(dest_path, 'wb') as f:
                 shutil.copyfileobj(response, f)
 
-        print(f"  Download complete: {dest_path}")
+        # Verify file was downloaded
+        if dest_path.exists() and dest_path.stat().st_size > 0:
+            print(f"  Download complete!")
+            return True
+        else:
+            print(f"  Download failed - empty file")
+            return False
 
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP Error {e.code}: {e.reason} - URL: {url}")
+        print(f"  HTTP Error {e.code}: {e.reason}")
+        return False
     except urllib.error.URLError as e:
-        raise RuntimeError(f"URL Error: {e.reason} - URL: {url}")
+        print(f"  URL Error: {e.reason}")
+        return False
+    except Exception as e:
+        print(f"  Error: {e}")
+        return False
 
 
 def _download_wikitext2_fallback(cache_dir: Optional[str] = None) -> dict:
@@ -123,8 +159,21 @@ def _download_wikitext2_fallback(cache_dir: Optional[str] = None) -> dict:
 
     # Download if not exists
     if not extract_dir.exists():
-        print(f"Downloading WikiText-2 from {WIKITEXT2_URL}...")
-        _download_with_redirect(WIKITEXT2_URL, zip_path)
+        print(f"Downloading WikiText-2...")
+
+        # Try multiple mirror URLs
+        download_success = False
+        for url in WIKITEXT2_URLS:
+            if _download_with_redirect(url, zip_path):
+                download_success = True
+                break
+
+        if not download_success:
+            raise RuntimeError(
+                "Failed to download WikiText-2 from any mirror!\n"
+                "Please install the datasets package: pip install datasets\n"
+                "Or manually download wikitext-2-raw-v1.zip"
+            )
 
         print(f"Extracting to {extract_dir}...")
         with zipfile.ZipFile(zip_path, 'r') as z:
