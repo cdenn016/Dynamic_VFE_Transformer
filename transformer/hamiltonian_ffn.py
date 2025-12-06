@@ -564,6 +564,13 @@ class HamiltonianPotential(nn.Module):
         V_align = torch.zeros(B, device=device, dtype=state.mu.dtype)
 
         if beta is not None and self.lambda_belief > 0:
+            # Handle multi-head attention: average over heads
+            # beta can be (B, N, N) or (B, n_heads, N, N)
+            if beta.dim() == 4:
+                beta_avg = beta.mean(dim=1)  # (B, N, N) - average over heads
+            else:
+                beta_avg = beta  # Already (B, N, N)
+
             # For each pair (i, j), compute transported KL
             for i in range(N):
                 for j in range(N):
@@ -586,8 +593,8 @@ class HamiltonianPotential(nn.Module):
                         mu_j_transported, Sigma_j_transported
                     )
 
-                    # Weight by attention
-                    V_align = V_align + self.lambda_belief * beta[:, i, j] * kl_ij
+                    # Weight by attention (averaged over heads)
+                    V_align = V_align + self.lambda_belief * beta_avg[:, i, j] * kl_ij
 
         # =====================================================================
         # 3. Cross-entropy term (if targets provided)
