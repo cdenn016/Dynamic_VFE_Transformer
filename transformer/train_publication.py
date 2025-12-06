@@ -8,12 +8,17 @@ Demonstrates:
 1. Variational FFN works - inference comparable to learned MLP
 2. Architecture is trainable - converges to reasonable performance
 3. Theoretical framework is sound - gauge-invariant inference holds
+4. Hamiltonian dynamics - energy-conserving symplectic integration (NEW!)
 
-Four FFN Modes for Ablation Study:
-    - learned: Standard MLP baseline
+Five FFN Modes for Ablation Study:
+    - learned: Standard MLP baseline (GELU activation)
     - variational_approx: First-order active inference (O(N²K), legacy)
     - variational_full: Complete gauge-invariant with second-order terms (O(N³K), legacy)
-    - variational_gradient_engine: Full active inference via validated gradient_engine.py (RECOMMENDED!)
+    - variational_gradient_engine: Full active inference via gradient_engine.py
+    - hamiltonian: Symplectic Hamiltonian dynamics on belief space (NEW!)
+      * Energy-conserving leapfrog integration
+      * Full faithful SPD geometry with curvature corrections
+      * NO learned weights - pure physics!
 
 Comprehensive Metrics Tracking:
     - Free energy components (α, β, γ terms)
@@ -22,6 +27,7 @@ Comprehensive Metrics Tracking:
     - Bits-per-character (BPC)
     - Attention statistics (β_mean, KL_mean)
     - Performance (step time, tokens/sec)
+    - Hamiltonian diagnostics (H_init, H_final, ΔH) for hamiltonian mode
 
 Output Files:
     - checkpoints_publication/ffn_{mode}/metrics.csv - comprehensive training metrics
@@ -35,9 +41,10 @@ Usage:
 
     # Or use command-line args:
     python transformer/train_publication.py --ffn_mode learned
+    python transformer/train_publication.py --ffn_mode hamiltonian
 
 Author: Designed for minimal publishable claim
-Date: November 2025
+Date: December 2025
 """
 
 import torch
@@ -59,9 +66,9 @@ from transformer.train_fast import FastTrainer, FastTrainingConfig
 # ============================================================================
 # EDIT THESE DEFAULTS TO RUN WITHOUT COMMAND-LINE ARGS
 # ============================================================================
-DEFAULT_FFN_MODE = 'variational_gradient_engine'  # 'learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', or None
-DEFAULT_RUN_ABLATION = False  # Set True to run all four modes
-DEFAULT_ENABLE_SIGMA_PHI = False   # Set True to enable learning Σ and φ (full geometric learning!)
+DEFAULT_FFN_MODE = 'hamiltonian'  # 'learned', 'variational_gradient_engine', 'hamiltonian', or None
+DEFAULT_RUN_ABLATION = False  # Set True to run all three modes
+DEFAULT_ENABLE_SIGMA_PHI = True   # Set True to enable learning Σ and φ (required for hamiltonian!)
 # ============================================================================
 
 
@@ -98,6 +105,12 @@ PUBLICATION_CONFIG = {
     # Sparse variational inference (full for N=32)
     'ffn_pattern': 'full',
     'ffn_window': 32,
+
+    # Hamiltonian FFN parameters (NEW!)
+    'ffn_hamiltonian_dt': 0.01,           # Leapfrog time step
+    'ffn_hamiltonian_n_steps': 10,        # Integration steps per forward pass
+    'ffn_hamiltonian_momentum_scale': 0.5, # Initial momentum scale
+    'ffn_hamiltonian_gamma': 0.0,         # Damping (0 = pure Hamiltonian, >0 = Langevin-like)
 
     # Training (optimized for convergence)
     'batch_size': 8,             # Larger batches for stability
@@ -657,23 +670,23 @@ def run_ablation_study(
     print("\n" + "="*70)
     print("ABLATION STUDY: THREE FFN MODES")
     print("="*70)
-    
 
     if enable_sigma_phi:
         print("\n🔥 FULL GEOMETRIC LEARNING ENABLED!")
         print("   Learning: μ (means), Σ (covariances), φ (gauge frames)")
 
     print("\nWill run:")
-    print("  1. learned                   (baseline)")
-    print("  2. variational_gradient_engine (full active inference via gradient_engine.py) - RECOMMENDED!")
+    print("  1. learned                     (baseline - standard MLP with GELU)")
+    print("  2. variational_gradient_engine (gradient-based active inference)")
+    print("  3. hamiltonian                 (symplectic dynamics - NO learned weights!)")
     print("="*70)
 
-    modes = ['learned', 'variational_gradient_engine']
+    modes = ['learned', 'variational_gradient_engine', 'hamiltonian']
     results = []
 
     for i, mode in enumerate(modes):
         print(f"\n\n{'='*70}")
-        print(f"EXPERIMENT {i+1}/2: {mode}")
+        print(f"EXPERIMENT {i+1}/{len(modes)}: {mode}")
         print("="*70)
 
         config = PUBLICATION_CONFIG.copy()
@@ -686,6 +699,12 @@ def run_ablation_study(
             config.setdefault('ffn_lambda_phi', 0.0)
             config.setdefault('ffn_update_sigma', True)
             config['evolve_sigma'] = True  # Enable sigma evolution for full Gaussian inference
+
+        # Hamiltonian mode requires sigma evolution
+        if mode == 'hamiltonian':
+            config.setdefault('ffn_lambda_belief', 0.5)  # Moderate alignment
+            config.setdefault('ffn_update_sigma', True)
+            config['evolve_sigma'] = True  # Required for Hamiltonian dynamics
 
         # Enable full geometric learning if requested
         if enable_sigma_phi:
@@ -768,8 +787,8 @@ def main():
 
     # FFN mode (uses defaults from top of file)
     parser.add_argument('--ffn_mode', type=str, default=DEFAULT_FFN_MODE,
-                        choices=['learned', 'variational_gradient_engine'],
-                        help='FFN mode (or use --run_ablation for all four modes)')
+                        choices=['learned', 'variational_gradient_engine', 'hamiltonian'],
+                        help='FFN mode (or use --run_ablation for all three modes)')
 
     # Ablation study (uses defaults from top of file)
     parser.add_argument('--run_ablation', action='store_true', default=DEFAULT_RUN_ABLATION,
@@ -826,6 +845,14 @@ def main():
             config.setdefault('ffn_lambda_phi', 0.0)
             config.setdefault('ffn_update_sigma', True)
             config['evolve_sigma'] = True  # Enable sigma evolution for full Gaussian inference
+
+        # Hamiltonian mode requires sigma evolution
+        if args.ffn_mode == 'hamiltonian':
+            config.setdefault('ffn_lambda_belief', 0.5)  # Moderate alignment
+            config.setdefault('ffn_update_sigma', True)
+            config['evolve_sigma'] = True  # Required for Hamiltonian dynamics
+            # Force enable_sigma_phi for Hamiltonian
+            args.enable_sigma_phi = True
 
         # Enable full geometric learning if requested
         if args.enable_sigma_phi:
