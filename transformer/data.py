@@ -28,14 +28,17 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Optional, Dict, List
 import numpy as np
 from pathlib import Path
+import os
+import urllib.request
+import zipfile
 
-# HuggingFace datasets (required for data loading)
+# HuggingFace datasets (optional - has fallback)
 try:
     from datasets import load_dataset
     DATASETS_AVAILABLE = True
 except ImportError:
     DATASETS_AVAILABLE = False
-    print("Warning: datasets not available. Install: pip install datasets")
+    load_dataset = None  # Will use fallback
 
 # Transformers (optional - only needed for BPE tokenization)
 try:
@@ -43,12 +46,61 @@ try:
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
-    # Only warn if datasets is available but transformers isn't
-    if DATASETS_AVAILABLE:
-        print("Note: transformers not available. Character-level training still works.")
+    AutoTokenizer = None
 
 # Legacy compatibility
 HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
+
+
+# =============================================================================
+# Fallback: Download WikiText-2 directly (no datasets package needed)
+# =============================================================================
+WIKITEXT2_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip"
+
+def _download_wikitext2_fallback(cache_dir: Optional[str] = None) -> dict:
+    """
+    Download WikiText-2 directly from source (fallback when datasets unavailable).
+
+    Returns dict with 'train', 'validation', 'test' text.
+    """
+    if cache_dir is None:
+        cache_dir = Path.home() / ".cache" / "wikitext2"
+    else:
+        cache_dir = Path(cache_dir)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    zip_path = cache_dir / "wikitext-2-raw-v1.zip"
+    extract_dir = cache_dir / "wikitext-2-raw"
+
+    # Download if not exists
+    if not extract_dir.exists():
+        print(f"Downloading WikiText-2 from {WIKITEXT2_URL}...")
+        urllib.request.urlretrieve(WIKITEXT2_URL, zip_path)
+
+        print(f"Extracting to {extract_dir}...")
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            z.extractall(cache_dir)
+
+        # Clean up zip
+        zip_path.unlink()
+
+    # Read files
+    data_dir = cache_dir / "wikitext-2-raw"
+
+    result = {}
+    for split, filename in [('train', 'wiki.train.raw'),
+                            ('validation', 'wiki.valid.raw'),
+                            ('test', 'wiki.test.raw')]:
+        filepath = data_dir / filename
+        if filepath.exists():
+            with open(filepath, 'r', encoding='utf-8') as f:
+                result[split] = f.read()
+        else:
+            raise FileNotFoundError(f"WikiText-2 file not found: {filepath}")
+
+    print(f"WikiText-2 loaded from cache: {cache_dir}")
+    return result
 
 
 class WikiText2Dataset(Dataset):
@@ -248,19 +300,23 @@ class WikiText2CharDataset(Dataset):
             vocab_size: Maximum vocabulary size (default 256 for extended ASCII)
             cache_dir: Optional cache directory for dataset
         """
-        assert DATASETS_AVAILABLE, "datasets required! pip install datasets"
-
         self.split = split
         self.max_seq_len = max_seq_len
         self.vocab_size = vocab_size
 
-        # Load dataset
+        # Load dataset (with fallback if datasets package unavailable)
         print(f"Loading WikiText-2 ({split}) for character-level modeling...")
-        dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
 
-        # Concatenate all text
-        texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
-        full_text = '\n\n'.join(texts)
+        if DATASETS_AVAILABLE:
+            # Use HuggingFace datasets
+            dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
+            texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
+            full_text = '\n\n'.join(texts)
+        else:
+            # Fallback: download directly
+            print("  (Using direct download fallback - datasets package not available)")
+            wikitext_data = _download_wikitext2_fallback(cache_dir)
+            full_text = wikitext_data[split]
 
         print(f"  Total characters: {len(full_text):,}")
 
@@ -382,15 +438,13 @@ def create_char_dataloaders(
         ...     vocab_size=256,
         ... )
     """
-    if not DATASETS_AVAILABLE:
-        raise ImportError(
-            "datasets required!\n"
-            "Install: pip install datasets"
-        )
+    # Note: No longer requires datasets package - has fallback download!
 
     print("="*70)
     print("CREATING CHARACTER-LEVEL WIKITEXT-2 DATALOADERS")
     print("="*70)
+    if not DATASETS_AVAILABLE:
+        print("(Using direct download fallback - datasets package not available)")
 
     # Create datasets
     train_dataset = WikiText2CharDataset(
