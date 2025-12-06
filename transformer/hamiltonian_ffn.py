@@ -1043,66 +1043,74 @@ class HamiltonianFFN(nn.Module):
         # Hamiltonian dynamics uses autograd.grad() internally for leapfrog.
         # To prevent "backward through graph twice" errors:
         # 1. Detach inputs (break connection to training graph)
-        # 2. Enable requires_grad for internal autograd.grad() to work
+        # 2. Use enable_grad() to ensure gradients work even during validation
         # 3. Detach outputs (dynamics is a deterministic transformation)
 
-        # Detach and enable gradients for internal dynamics
-        mu_dyn = mu.detach().clone().requires_grad_(True)
-        Sigma_dyn = Sigma.detach().clone().requires_grad_(True)
-        phi_dyn = phi.detach().clone().requires_grad_(True)
+        # Detach inputs to break connection to training graph
+        mu_dyn = mu.detach().clone()
+        Sigma_dyn = Sigma.detach().clone()
+        phi_dyn = phi.detach().clone()
         mu_prior_dyn = mu_prior.detach()
         Sigma_prior_dyn = Sigma_prior.detach()
         beta_dyn = beta.detach() if beta is not None else None
 
-        # Sample initial momenta
-        pi_mu, pi_Sigma, pi_phi = self.sample_momenta(mu_dyn, Sigma_dyn, phi_dyn, Sigma_prior_dyn)
+        # Use enable_grad() to ensure autograd.grad() works even when called
+        # from validation (which uses torch.no_grad() context)
+        with torch.enable_grad():
+            # Enable gradients for dynamics variables
+            mu_dyn.requires_grad_(True)
+            Sigma_dyn.requires_grad_(True)
+            phi_dyn.requires_grad_(True)
 
-        # Create initial phase space state
-        state = PhaseSpaceState(
-            mu=mu_dyn,
-            Sigma=Sigma_dyn,
-            phi=phi_dyn,
-            pi_mu=pi_mu,
-            pi_Sigma=pi_Sigma,
-            pi_phi=pi_phi,
-        )
+            # Sample initial momenta
+            pi_mu, pi_Sigma, pi_phi = self.sample_momenta(mu_dyn, Sigma_dyn, phi_dyn, Sigma_prior_dyn)
 
-        # Compute initial Hamiltonian
-        T_init = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
-        V_init, V_breakdown = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
-        H_init = T_init + V_init
+            # Create initial phase space state
+            state = PhaseSpaceState(
+                mu=mu_dyn,
+                Sigma=Sigma_dyn,
+                phi=phi_dyn,
+                pi_mu=pi_mu,
+                pi_Sigma=pi_Sigma,
+                pi_phi=pi_phi,
+            )
 
-        # Apply damping if gamma > 0 (Langevin-like)
-        if self.gamma > 0:
-            state.pi_mu = state.pi_mu * (1 - self.gamma * self.dt)
-            if self.update_Sigma:
-                state.pi_Sigma = state.pi_Sigma * (1 - self.gamma * self.dt)
-            if self.update_phi:
-                state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
+            # Compute initial Hamiltonian
+            T_init = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
+            V_init, V_breakdown = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
+            H_init = T_init + V_init
 
-        # Symplectic integration
-        state = self.integrator.integrate(
-            state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out
-        )
+            # Apply damping if gamma > 0 (Langevin-like)
+            if self.gamma > 0:
+                state.pi_mu = state.pi_mu * (1 - self.gamma * self.dt)
+                if self.update_Sigma:
+                    state.pi_Sigma = state.pi_Sigma * (1 - self.gamma * self.dt)
+                if self.update_phi:
+                    state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
 
-        # Compute final Hamiltonian
-        T_final = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
-        V_final, _ = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
-        H_final = T_final + V_final
+            # Symplectic integration
+            state = self.integrator.integrate(
+                state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out
+            )
 
-        # Energy conservation diagnostic
-        delta_H = (H_final - H_init).abs().mean()
+            # Compute final Hamiltonian
+            T_final = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
+            V_final, _ = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
+            H_final = T_final + V_final
 
-        diagnostics = {
-            'H_init': H_init.mean().item(),
-            'H_final': H_final.mean().item(),
-            'delta_H': delta_H.item(),
-            'T_init': T_init.mean().item(),
-            'T_final': T_final.mean().item(),
-            'V_init': V_init.mean().item(),
-            'V_final': V_final.mean().item(),
-            **{k: v.mean().item() for k, v in V_breakdown.items()},
-        }
+            # Energy conservation diagnostic
+            delta_H = (H_final - H_init).abs().mean()
+
+            diagnostics = {
+                'H_init': H_init.mean().item(),
+                'H_final': H_final.mean().item(),
+                'delta_H': delta_H.item(),
+                'T_init': T_init.mean().item(),
+                'T_final': T_final.mean().item(),
+                'V_init': V_init.mean().item(),
+                'V_final': V_final.mean().item(),
+                **{k: v.mean().item() for k, v in V_breakdown.items()},
+            }
 
         # Detach outputs - gradients flow through loss, not through dynamics
         return state.mu.detach(), state.Sigma.detach(), state.phi.detach(), diagnostics
