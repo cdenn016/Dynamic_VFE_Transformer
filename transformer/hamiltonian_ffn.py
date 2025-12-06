@@ -1040,56 +1040,62 @@ class HamiltonianFFN(nn.Module):
             phi_new: (B, N, 3) updated gauge field
             diagnostics: dict with energy terms, conservation, etc.
         """
-        # Sample initial momenta
-        pi_mu, pi_Sigma, pi_phi = self.sample_momenta(mu, Sigma, phi, Sigma_prior)
+        # Hamiltonian dynamics uses autograd.grad() internally for leapfrog,
+        # which frees the computation graph. We wrap in no_grad() and detach
+        # outputs so training can backprop through the loss without conflict.
+        # The dynamics is treated as a deterministic transformation.
+        with torch.no_grad():
+            # Sample initial momenta
+            pi_mu, pi_Sigma, pi_phi = self.sample_momenta(mu, Sigma, phi, Sigma_prior)
 
-        # Create initial phase space state
-        state = PhaseSpaceState(
-            mu=mu,
-            Sigma=Sigma,
-            phi=phi,
-            pi_mu=pi_mu,
-            pi_Sigma=pi_Sigma,
-            pi_phi=pi_phi,
-        )
+            # Create initial phase space state
+            state = PhaseSpaceState(
+                mu=mu.clone(),
+                Sigma=Sigma.clone(),
+                phi=phi.clone(),
+                pi_mu=pi_mu,
+                pi_Sigma=pi_Sigma,
+                pi_phi=pi_phi,
+            )
 
-        # Compute initial Hamiltonian
-        T_init = self.kinetic.total_kinetic(state, Sigma_prior)
-        V_init, V_breakdown = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
-        H_init = T_init + V_init
+            # Compute initial Hamiltonian
+            T_init = self.kinetic.total_kinetic(state, Sigma_prior)
+            V_init, V_breakdown = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
+            H_init = T_init + V_init
 
-        # Apply damping if gamma > 0 (Langevin-like)
-        if self.gamma > 0:
-            state.pi_mu = state.pi_mu * (1 - self.gamma * self.dt)
-            if self.update_Sigma:
-                state.pi_Sigma = state.pi_Sigma * (1 - self.gamma * self.dt)
-            if self.update_phi:
-                state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
+            # Apply damping if gamma > 0 (Langevin-like)
+            if self.gamma > 0:
+                state.pi_mu = state.pi_mu * (1 - self.gamma * self.dt)
+                if self.update_Sigma:
+                    state.pi_Sigma = state.pi_Sigma * (1 - self.gamma * self.dt)
+                if self.update_phi:
+                    state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
 
-        # Symplectic integration
-        state = self.integrator.integrate(
-            state, mu_prior, Sigma_prior, beta, targets, W_out
-        )
+            # Symplectic integration
+            state = self.integrator.integrate(
+                state, mu_prior, Sigma_prior, beta, targets, W_out
+            )
 
-        # Compute final Hamiltonian
-        T_final = self.kinetic.total_kinetic(state, Sigma_prior)
-        V_final, _ = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
-        H_final = T_final + V_final
+            # Compute final Hamiltonian
+            T_final = self.kinetic.total_kinetic(state, Sigma_prior)
+            V_final, _ = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
+            H_final = T_final + V_final
 
-        # Energy conservation diagnostic
-        delta_H = (H_final - H_init).abs().mean()
+            # Energy conservation diagnostic
+            delta_H = (H_final - H_init).abs().mean()
 
-        diagnostics = {
-            'H_init': H_init.mean().item(),
-            'H_final': H_final.mean().item(),
-            'delta_H': delta_H.item(),
-            'T_init': T_init.mean().item(),
-            'T_final': T_final.mean().item(),
-            'V_init': V_init.mean().item(),
-            'V_final': V_final.mean().item(),
-            **{k: v.mean().item() for k, v in V_breakdown.items()},
-        }
+            diagnostics = {
+                'H_init': H_init.mean().item(),
+                'H_final': H_final.mean().item(),
+                'delta_H': delta_H.item(),
+                'T_init': T_init.mean().item(),
+                'T_final': T_final.mean().item(),
+                'V_init': V_init.mean().item(),
+                'V_final': V_final.mean().item(),
+                **{k: v.mean().item() for k, v in V_breakdown.items()},
+            }
 
+        # Return detached outputs - gradients flow through loss, not dynamics
         return state.mu, state.Sigma, state.phi, diagnostics
 
     def extra_repr(self) -> str:
