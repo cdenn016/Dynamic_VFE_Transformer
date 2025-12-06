@@ -381,6 +381,27 @@ class GaugeTransformerLM(nn.Module):
             # Update covariances if evolving
             if final_block.evolve_sigma and sigma_ffn is not None:
                 sigma_q = sigma_ffn
+        elif final_block.ffn_mode == 'hamiltonian':
+            # Hamiltonian mode returns (mu, sigma, phi, diagnostics) tuple
+            mu_ffn, sigma_ffn, phi_ffn, diagnostics = final_block.ffn(
+                mu=mu_normalized,
+                beta=beta,
+                mu_prior=mu_prior,
+                phi=phi,
+                sigma=sigma_q,
+                sigma_prior=None,  # Will default to identity
+                mask=mask,
+                targets=targets,
+                W_out=self.out_proj.weight if hasattr(self.out_proj, 'weight') else None,
+            )
+            # Update covariances from Hamiltonian dynamics
+            if final_block.evolve_sigma and sigma_ffn is not None:
+                sigma_q = sigma_ffn
+            # Update gauge frames from Hamiltonian dynamics
+            if final_block.evolve_phi and phi_ffn is not None:
+                phi = phi_ffn
+            # Store diagnostics for monitoring
+            final_block._last_hamiltonian_diagnostics = diagnostics
         else:  # Legacy variational modes (variational_approx, variational_full)
             mu_ffn = final_block.ffn(
                 mu=mu_normalized,
