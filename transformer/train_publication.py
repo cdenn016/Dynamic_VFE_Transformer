@@ -64,6 +64,7 @@ from transformer.model import GaugeTransformerLM
 from transformer.data import create_byte_dataloaders
 from transformer.train import compute_free_energy_loss
 from transformer.train_fast import FastTrainer, FastTrainingConfig
+from transformer.publication_metrics import PublicationMetrics, AblationConfig, AblationResult
 
 
 def get_git_info() -> Dict[str, str]:
@@ -374,13 +375,18 @@ class PublicationMetricsTracker:
 class PublicationTrainer(FastTrainer):
     """Enhanced trainer with publication-quality metrics."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, publication_metrics: PublicationMetrics = None, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Publication metrics
+        # Basic CSV metrics tracker
         metrics_path = self.config.checkpoint_dir / 'metrics.csv'
         self.metrics_tracker = PublicationMetricsTracker(metrics_path)
         print(f"📊 Logging publication metrics to: {metrics_path}")
+
+        # Comprehensive publication metrics (optional)
+        self.pub_metrics = publication_metrics
+        if self.pub_metrics:
+            print(f"📈 Comprehensive metrics enabled: {self.pub_metrics.experiment_dir}")
 
     def train_step(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Train step with comprehensive metrics."""
@@ -495,12 +501,31 @@ class PublicationTrainer(FastTrainer):
             # Get learning rates
             lrs = {group['name']: group['lr'] for group in self.optimizer.param_groups}
 
-            # Log to tracker
+            # Log to basic tracker
             batch_size = batch[0].shape[0]
             seq_len = batch[0].shape[1]
             self.metrics_tracker.log_step(
                 step + 1, metrics, lrs, grad_norms, step_time, batch_size, seq_len
             )
+
+            # Log to comprehensive publication metrics (if enabled)
+            if self.pub_metrics:
+                # Extract Hamiltonian diagnostics if available
+                diagnostics = metrics.get('hamiltonian_diagnostics', None)
+                self.pub_metrics.record_training_step(
+                    step=step + 1,
+                    epoch=(step + 1) / len(self.train_loader),
+                    train_metrics={
+                        'loss': metrics['train_loss_total'],
+                        'ce_loss': metrics['train_loss_ce'],
+                    },
+                    diagnostics=diagnostics,
+                    grad_norms=grad_norms,
+                    lrs=lrs,
+                    step_time=step_time,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                )
 
             # Console logging
             if (step + 1) % self.config.log_interval == 0:
@@ -521,6 +546,10 @@ class PublicationTrainer(FastTrainer):
             if (step + 1) % self.config.eval_interval == 0:
                 val_metrics = self.validate()
                 self.metrics_tracker.log_val(step + 1, val_metrics)
+
+                # Log to comprehensive metrics
+                if self.pub_metrics:
+                    self.pub_metrics.record_validation(step + 1, val_metrics)
 
                 print(f"\n  Validation @ step {step+1}:")
                 print(f"    Loss: {val_metrics['loss']:.4f}")
@@ -548,6 +577,12 @@ class PublicationTrainer(FastTrainer):
         self.metrics_tracker.save()
         print(f"\n📊 Final metrics saved to: {self.metrics_tracker.save_path}")
 
+        # Save comprehensive publication metrics
+        if self.pub_metrics:
+            self.pub_metrics.save_all()
+            self.pub_metrics.generate_all_figures()
+            self.pub_metrics.print_summary()
+
         # Summary
         elapsed = time.time() - start_time
         print(f"\n{'='*70}")
@@ -567,6 +602,7 @@ def run_single_experiment(
     checkpoint_dir: Path,
     use_wandb: bool = False,
     args: argparse.Namespace = None,
+    enable_publication_metrics: bool = True,
 ) -> Dict:
     """
     Run a single training experiment.
@@ -578,6 +614,7 @@ def run_single_experiment(
         checkpoint_dir: Directory to save checkpoints
         use_wandb: Whether to use Weights & Biases logging
         args: Command-line arguments for logging
+        enable_publication_metrics: Whether to enable comprehensive publication metrics
 
     Returns:
         Dictionary with final metrics
@@ -688,12 +725,22 @@ def run_single_experiment(
     print("INITIALIZING TRAINER")
     print("="*70)
 
+    # Create comprehensive publication metrics tracker
+    pub_metrics = None
+    if enable_publication_metrics:
+        experiment_name = f"{ffn_mode}_{time.strftime('%Y%m%d_%H%M%S')}"
+        pub_metrics = PublicationMetrics(
+            experiment_name=experiment_name,
+            base_dir=exp_checkpoint_dir / "publication_outputs"
+        )
+
     trainer = PublicationTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         config=train_config,
         device=device,
+        publication_metrics=pub_metrics,
     )
 
     # =================================================================
