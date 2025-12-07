@@ -379,7 +379,8 @@ class ReversibilityTester:
 
         mu_prior = torch.zeros(batch_size, seq_len, K, device=device)
         Sigma_prior = torch.eye(K, device=device).unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1, -1).clone()
-        beta = torch.ones(batch_size, seq_len, device=device)
+        # beta is attention weights: (B, N, N) pairwise
+        beta = torch.ones(batch_size, seq_len, seq_len, device=device) / seq_len
 
         # Initial Hamiltonian
         H_0, _ = potential.forward(state_0, mu_prior, Sigma_prior, beta, None, None)
