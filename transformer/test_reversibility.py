@@ -61,7 +61,6 @@ def test_reversibility(
     # Create integrator components
     kinetic = HamiltonianKineticTerms(
         embed_dim=embed_dim,
-        mass_matrix='fisher',
     ).to(device)
 
     potential = HamiltonianPotential(
@@ -270,7 +269,6 @@ def test_token_attribution(
 
     kinetic = HamiltonianKineticTerms(
         embed_dim=embed_dim,
-        mass_matrix='fisher',
     ).to(device)
 
     potential = HamiltonianPotential(
