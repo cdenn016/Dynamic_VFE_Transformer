@@ -277,33 +277,107 @@ def _compute_kl_matrix_torch(
     kl_matrix: torch.Tensor,
 ) -> None:
     """
-    Fallback KL matrix computation using pure PyTorch.
+    VECTORIZED KL matrix computation using pure PyTorch.
 
-    Slower than Numba but doesn't require compilation.
+    Computes all pairwise KL divergences without Python loops.
+
+    Args:
+        mu_q: (B, N, K) belief means
+        sigma_q: (B, N, K, K) belief covariances
+        phi: (B, N, 3) gauge fields
+        generators: (3, K, K) SO(3) generators
+        kl_matrix: (B, N, N) output tensor (modified in-place)
     """
-    batch_size, num_agents, K = mu_q.shape
+    B, N, K = mu_q.shape
+    device = mu_q.device
+    dtype = mu_q.dtype
+    eps = 1e-6
 
-    for b in range(batch_size):
-        for i in range(num_agents):
-            for j in range(num_agents):
-                # Transport q_j to i's frame
-                mu_j_transported, sigma_j_transported = _transport_gaussian_torch(
-                    mu_q[b, j],
-                    sigma_q[b, j],
-                    phi[b, i],
-                    phi[b, j],
-                    generators
-                )
+    # =========================================================================
+    # Step 1: Compute all pairwise transport operators Ω_ij = exp(φ_i) exp(-φ_j)
+    # =========================================================================
+    # phi: (B, N, 3) -> phi_matrix: (B, N, K, K)
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
+    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
 
-                # Compute KL(q_i || transported_q_j)
-                kl_ij = _kl_gaussian_torch(
-                    mu_q[b, i],
-                    sigma_q[b, i],
-                    mu_j_transported,
-                    sigma_j_transported
-                )
+    # Omega_ij = exp(φ_i) @ exp(-φ_j)
+    # Result: (B, N, N, K, K)
+    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
 
-                kl_matrix[b, i, j] = kl_ij
+    # =========================================================================
+    # Step 2: Transport all means and covariances
+    # =========================================================================
+    # μ_j^{→i} = Ω_ij @ μ_j
+    mu_transported = torch.einsum('bijkl,bjl->bijk', Omega, mu_q)  # (B, N, N, K)
+
+    # Σ_j^{→i} = Ω_ij @ Σ_j @ Ω_ij^T
+    Sigma_transported = torch.einsum(
+        'bijkl,bjlm,bijmn->bijkn',
+        Omega, sigma_q, Omega.transpose(-1, -2)
+    )  # (B, N, N, K, K)
+
+    # =========================================================================
+    # Step 3: Expand mu_i and Sigma_i for pairwise comparison
+    # =========================================================================
+    mu_i = mu_q[:, :, None, :].expand(-1, -1, N, -1)  # (B, N, N, K)
+    Sigma_i = sigma_q[:, :, None, :, :].expand(-1, -1, N, -1, -1)  # (B, N, N, K, K)
+
+    # =========================================================================
+    # Step 4: Compute all KL divergences
+    # KL(q_i || Ω_ij[q_j]) = KL(N(μ_i, Σ_i) || N(μ_j^{→i}, Σ_j^{→i}))
+    # =========================================================================
+    I = torch.eye(K, device=device, dtype=dtype)
+    Sigma_i_reg = Sigma_i + eps * I
+    Sigma_transported_reg = Sigma_transported + eps * I
+
+    try:
+        # Cholesky of transported covariances (prior in KL)
+        L_p = torch.linalg.cholesky(Sigma_transported_reg)
+
+        # Trace term: tr(Σ_p⁻¹ Σ_q) where Σ_p = Σ_j^{→i}, Σ_q = Σ_i
+        Y = torch.linalg.solve_triangular(L_p, Sigma_i_reg, upper=False)
+        Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+        trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)  # (B, N, N)
+
+        # Mahalanobis term: (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q)
+        delta_mu = mu_transported - mu_i  # (B, N, N, K)
+        v = torch.linalg.solve_triangular(
+            L_p, delta_mu.unsqueeze(-1), upper=False
+        ).squeeze(-1)
+        mahal_term = torch.sum(v ** 2, dim=-1)  # (B, N, N)
+
+        # Log determinant terms
+        logdet_p = 2.0 * torch.sum(
+            torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1
+        )
+        L_q = torch.linalg.cholesky(Sigma_i_reg)
+        logdet_q = 2.0 * torch.sum(
+            torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1
+        )
+        logdet_term = logdet_p - logdet_q  # (B, N, N)
+
+        # KL divergence for all pairs
+        kl_all = 0.5 * (trace_term + mahal_term - K + logdet_term)  # (B, N, N)
+        kl_all = torch.clamp(kl_all, min=0.0)
+
+        # Copy to output
+        kl_matrix.copy_(kl_all)
+
+    except RuntimeError:
+        # Fallback to loop-based computation if Cholesky fails
+        for b in range(B):
+            for i in range(N):
+                for j in range(N):
+                    mu_j_transported, sigma_j_transported = _transport_gaussian_torch(
+                        mu_q[b, j], sigma_q[b, j],
+                        phi[b, i], phi[b, j], generators
+                    )
+                    kl_ij = _kl_gaussian_torch(
+                        mu_q[b, i], sigma_q[b, i],
+                        mu_j_transported, sigma_j_transported
+                    )
+                    kl_matrix[b, i, j] = kl_ij
 
 
 def _transport_gaussian_torch(
@@ -431,57 +505,49 @@ def aggregate_messages(
     device = mu_q.device
     dtype = mu_q.dtype
 
-    # Allocate output
-    mu_aggregated = torch.zeros_like(mu_q)  # (B, N, K)
+    # =========================================================================
+    # VECTORIZED aggregation - no Python loops!
+    # =========================================================================
 
+    # Step 1: Compute all pairwise transport operators Ω_ij = exp(φ_i) exp(-φ_j)
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
+    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+
+    # Omega_ij = exp(φ_i) @ exp(-φ_j)  ->  (B, N, N, K, K)
+    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
+
+    # Step 2: Transport all means: μ_j^{→i} = Ω_ij @ μ_j
+    mu_transported = torch.einsum('bijkl,bjl->bijk', Omega, mu_q)  # (B, N, N, K)
+
+    # Step 3: Weighted aggregation: m_i = Σ_j β_ij * μ_j^{→i}
+    # beta: (B, N, N), mu_transported: (B, N, N, K)
+    mu_aggregated = torch.einsum('bij,bijk->bik', beta, mu_transported)  # (B, N, K)
+
+    # Step 4: Covariance aggregation (if requested)
     if aggregate_mode == 'full_distribution':
-        sigma_aggregated = torch.zeros_like(sigma_q)  # (B, N, K, K)
+        # Transport all covariances: Σ_j^{→i} = Ω_ij @ Σ_j @ Ω_ij^T
+        Sigma_transported = torch.einsum(
+            'bijkl,bjlm,bijmn->bijkn',
+            Omega, sigma_q, Omega.transpose(-1, -2)
+        )  # (B, N, N, K, K)
+
+        # Second moment: E[x x^T] = Σ + μ μ^T
+        # (B, N, N, K, K) + (B, N, N, K, 1) @ (B, N, N, 1, K)
+        second_moment = Sigma_transported + torch.einsum(
+            'bijk,bijl->bijkl', mu_transported, mu_transported
+        )
+
+        # Weighted sum of second moments
+        # beta: (B, N, N), second_moment: (B, N, N, K, K)
+        sigma_aggregated = torch.einsum('bij,bijkl->bikl', beta, second_moment)
+
+        # Complete mixture variance: Σ_mix = E[x x^T] - E[x] E[x]^T
+        sigma_aggregated = sigma_aggregated - torch.einsum(
+            'bik,bil->bikl', mu_aggregated, mu_aggregated
+        )
     else:
         sigma_aggregated = None
-
-    # =========================================================================
-    # Aggregate over all agents j for each receiver i
-    # =========================================================================
-
-    for b in range(batch_size):
-        for i in range(num_agents):
-            # Accumulator for agent i
-            mu_i_acc = torch.zeros(K, device=device, dtype=dtype)
-
-            if aggregate_mode == 'full_distribution':
-                sigma_i_acc = torch.zeros(K, K, device=device, dtype=dtype)
-
-            for j in range(num_agents):
-                # Transport μ_j to i's frame
-                mu_j_transported, sigma_j_transported = _transport_gaussian_torch(
-                    mu_q[b, j],
-                    sigma_q[b, j],
-                    phi[b, i],
-                    phi[b, j],
-                    generators
-                )
-
-                # Weight by attention (scalar β_ij)
-                beta_ij = beta[b, i, j]
-
-                # Accumulate mean
-                mu_i_acc += beta_ij * mu_j_transported
-
-                # Accumulate covariance (if full distribution mode)
-                if aggregate_mode == 'full_distribution':
-                    # Mixture approximation: Σ_mix = Σ_j β_ij (Σ_j + μ_j μ_j^T) - μ_mix μ_mix^T
-                    sigma_i_acc += beta_ij * (
-                        sigma_j_transported +
-                        torch.outer(mu_j_transported, mu_j_transported)
-                    )
-
-            # Store aggregated values
-            mu_aggregated[b, i] = mu_i_acc
-
-            if aggregate_mode == 'full_distribution':
-                # Complete mixture variance formula
-                sigma_i_acc -= torch.outer(mu_i_acc, mu_i_acc)
-                sigma_aggregated[b, i] = sigma_i_acc
 
     return mu_aggregated, sigma_aggregated
 

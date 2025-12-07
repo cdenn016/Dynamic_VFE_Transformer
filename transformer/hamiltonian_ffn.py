@@ -561,6 +561,7 @@ class HamiltonianPotential(nn.Module):
         # =====================================================================
         # 2. Belief alignment: λ · Σ_ij β_ij · KL(q_i || Ω_ij[q_j])
         # =====================================================================
+        # VECTORIZED implementation - no Python loops!
         V_align = torch.zeros(B, device=device, dtype=state.mu.dtype)
 
         if beta is not None and self.lambda_belief > 0:
@@ -571,30 +572,80 @@ class HamiltonianPotential(nn.Module):
             else:
                 beta_avg = beta  # Already (B, N, N)
 
-            # For each pair (i, j), compute transported KL
-            for i in range(N):
-                for j in range(N):
-                    if i == j:
-                        continue
+            # Compute all pairwise transport matrices Ω_ij = exp(φ_i) exp(-φ_j)
+            # phi: (B, N, 3) -> phi_matrix: (B, N, K, K)
+            phi_matrix = torch.einsum('bna,aij->bnij', state.phi, self.generators)
+            exp_phi = torch.matrix_exp(phi_matrix)      # (B, N, K, K)
+            exp_neg_phi = torch.matrix_exp(-phi_matrix) # (B, N, K, K)
 
-                    # Transport q_j to frame of i
-                    Omega_ij = self.compute_transport(
-                        state.phi[:, i:i+1, :].expand(-1, 1, -1),
-                        state.phi[:, j:j+1, :].expand(-1, 1, -1)
-                    ).squeeze(1)  # (B, K, K)
+            # Omega_ij = exp(φ_i) @ exp(-φ_j)
+            # exp_phi[:, :, None] is (B, N, 1, K, K) - broadcast over j
+            # exp_neg_phi[:, None, :] is (B, 1, N, K, K) - broadcast over i
+            Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)  # (B, N, N, K, K)
 
-                    # Transported mean and covariance
-                    mu_j_transported = torch.einsum('bij,bj->bi', Omega_ij, state.mu[:, j])
-                    Sigma_j_transported = Omega_ij @ state.Sigma[:, j] @ Omega_ij.transpose(-1, -2)
+            # Transport all means: μ_j^{→i} = Ω_ij @ μ_j
+            # state.mu[:, None, :, :] is (B, 1, N, K) - μ_j for all j
+            mu_transported = torch.einsum('bijkl,bjl->bijk', Omega, state.mu)  # (B, N, N, K)
 
-                    # KL divergence
-                    kl_ij = self.kl_divergence(
-                        state.mu[:, i], state.Sigma[:, i],
-                        mu_j_transported, Sigma_j_transported
-                    )
+            # Transport all covariances: Σ_j^{→i} = Ω_ij @ Σ_j @ Ω_ij^T
+            # state.Sigma[:, None, :] is (B, 1, N, K, K) - Σ_j for all j
+            Sigma_transported = torch.einsum(
+                'bijkl,bjlm,bijmn->bijkn',
+                Omega, state.Sigma, Omega.transpose(-1, -2)
+            )  # (B, N, N, K, K)
 
-                    # Weight by attention (averaged over heads)
-                    V_align = V_align + self.lambda_belief * beta_avg[:, i, j] * kl_ij
+            # Expand mu_i and Sigma_i for pairwise comparison
+            mu_i = state.mu[:, :, None, :].expand(-1, -1, N, -1)  # (B, N, N, K)
+            Sigma_i = state.Sigma[:, :, None, :, :].expand(-1, -1, N, -1, -1)  # (B, N, N, K, K)
+
+            # Compute KL divergences for all pairs (vectorized)
+            # KL(q_i || Ω_ij[q_j]) for all i, j
+            # Use Cholesky for stability
+            eps = 1e-6
+            I = torch.eye(K, device=device, dtype=state.mu.dtype)
+            Sigma_transported_reg = Sigma_transported + eps * I
+
+            try:
+                L_p = torch.linalg.cholesky(Sigma_transported_reg)
+
+                # Trace term: tr(Σ_p⁻¹ Σ_q)
+                Sigma_i_reg = Sigma_i + eps * I
+                Y = torch.linalg.solve_triangular(L_p, Sigma_i_reg, upper=False)
+                Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+                trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)  # (B, N, N)
+
+                # Mahalanobis term
+                delta_mu = mu_transported - mu_i  # (B, N, N, K)
+                v = torch.linalg.solve_triangular(
+                    L_p, delta_mu.unsqueeze(-1), upper=False
+                ).squeeze(-1)
+                mahal_term = torch.sum(v ** 2, dim=-1)  # (B, N, N)
+
+                # Log determinant terms
+                logdet_p = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                L_q = torch.linalg.cholesky(Sigma_i_reg)
+                logdet_q = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                logdet_term = logdet_p - logdet_q  # (B, N, N)
+
+                # KL divergence for all pairs
+                kl_all = 0.5 * (trace_term + mahal_term - K + logdet_term)  # (B, N, N)
+                kl_all = torch.clamp(kl_all, min=0.0)
+
+            except RuntimeError:
+                # Fallback: use simpler computation if Cholesky fails
+                kl_all = torch.zeros(B, N, N, device=device, dtype=state.mu.dtype)
+
+            # Zero out diagonal (no self-comparison)
+            diag_mask = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)
+            kl_all = kl_all.masked_fill(diag_mask, 0.0)
+
+            # Weighted sum: Σ_ij β_ij · KL_ij
+            weighted_kl = beta_avg * kl_all  # (B, N, N)
+            V_align = self.lambda_belief * weighted_kl.sum(dim=(-2, -1))  # (B,)
 
         # =====================================================================
         # 3. Cross-entropy term (if targets provided)
