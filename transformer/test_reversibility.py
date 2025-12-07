@@ -2,6 +2,13 @@
 Test Hamiltonian Reversibility
 ==============================
 
+Demonstrates that symplectic leapfrog integration is time-reversible:"""
+
+# Fix OpenMP conflict on Windows/Anaconda
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+__doc__ = """
 Demonstrates that symplectic leapfrog integration is time-reversible:
     Forward:  (q₀, p₀) → T steps → (q_T, p_T)
     Reverse:  (q_T, -p_T) → T steps → (q₀, -p₀)
