@@ -224,7 +224,7 @@ class WikiText2Dataset(Dataset):
             tokenizer_name: HuggingFace tokenizer name
             cache_dir: Optional cache directory for dataset
         """
-        assert DATASETS_AVAILABLE, "datasets required! pip install datasets"
+        # Only transformers is required - datasets has fallback
         assert TRANSFORMERS_AVAILABLE, "transformers required for BPE tokenization! pip install transformers"
 
         self.split = split
@@ -241,13 +241,19 @@ class WikiText2Dataset(Dataset):
         self.pad_token_id = self.tokenizer.pad_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
 
-        # Load dataset
-        print(f"Loading WikiText-2 ({split})...")
-        dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
+        # Load dataset (with fallback if datasets package unavailable)
+        print(f"Loading WikiText-2 ({split}) for BPE tokenization...")
 
-        # Concatenate all text (WikiText-2 has one article per line)
-        texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
-        full_text = '\n\n'.join(texts)
+        if DATASETS_AVAILABLE:
+            # Use HuggingFace datasets
+            dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
+            texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
+            full_text = '\n\n'.join(texts)
+        else:
+            # Fallback: download directly (same as character-level)
+            print("  (Using direct download fallback - datasets package not available)")
+            wikitext_data = _download_wikitext2_fallback(cache_dir)
+            full_text = wikitext_data[split]
 
         print(f"  Total characters: {len(full_text):,}")
 
@@ -619,14 +625,15 @@ def create_dataloaders(
         ...     logits = model(input_ids)
         ...     loss = criterion(logits, target_ids)
     """
-    if not DATASETS_AVAILABLE:
-        raise ImportError("datasets required! pip install datasets")
+    # Only transformers required - datasets has fallback download
     if not TRANSFORMERS_AVAILABLE:
         raise ImportError("transformers required for BPE tokenization! pip install transformers")
 
     print("="*70)
-    print("CREATING WIKITEXT-2 DATALOADERS")
+    print("CREATING WIKITEXT-2 DATALOADERS (BPE)")
     print("="*70)
+    if not DATASETS_AVAILABLE:
+        print("(Using direct download fallback - datasets package not available)")
 
     # Create datasets
     train_dataset = WikiText2Dataset(
