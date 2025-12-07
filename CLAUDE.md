@@ -31,6 +31,19 @@ Apply these when working on this codebase:
 - NumPy reference implementations for comparison
 - Edge case coverage (single agent, identity matrices, zero inputs)
 
+## Known Limitations
+
+### Σ Reversibility in Hamiltonian Dynamics
+
+The leapfrog integrator achieves excellent reversibility for μ (~10⁻⁷ error) but has higher drift for Σ (~10⁻² error over many steps). This is a fundamental limitation, not a bug:
+
+- **μ dynamics**: T_μ uses constant mass matrix (prior Σ_p) → exactly symplectic
+- **Σ dynamics**: T_Σ = tr(π_Σ Σ π_Σ Σ) has position-dependent mass → explicit leapfrog is only 1st-order accurate on curved SPD manifold
+
+The `spd_kinetic_gradient` correction improves but doesn't achieve exact symplecticity. Options for exact Σ reversibility (implicit midpoint, RATTLE) would add 10-20× computational cost.
+
+**Practical impact**: Negligible for typical use (1-4 integration steps per layer). Token attribution via μ reversal works excellently. Only affects stress tests with 100+ steps.
+
 ## Communication Style
 
 **Be direct:**
