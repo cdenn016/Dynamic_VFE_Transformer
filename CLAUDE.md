@@ -44,6 +44,12 @@ The `spd_kinetic_gradient` correction improves but doesn't achieve exact symplec
 
 **Practical impact**: Negligible for typical use (1-4 integration steps per layer). Token attribution via μ reversal works excellently. Only affects stress tests with 100+ steps.
 
+**Future work** (RTX 5090 training):
+- Robustly test reversibility at scale (seq_len 32, 64, 128+)
+- Visualize phase space trajectories for actual language sentences
+- Token attribution examples showing input→output causal chains
+- Compare with Vaswani baseline to demonstrate interpretability advantage
+
 ## Communication Style
 
 **Be direct:**
