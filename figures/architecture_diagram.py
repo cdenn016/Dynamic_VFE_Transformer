@@ -155,10 +155,13 @@ def create_hamiltonian_architecture(ax):
             r'$\dot{q} = \partial H/\partial p$,  $\dot{p} = -\partial H/\partial q$',
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
 
-    # Hamiltonian definition
+    # Hamiltonian definition (simplified - no \underbrace)
     ax.text(5, block_y - 2.8,
-            r'$H = \underbrace{T_\mu + T_\Sigma + T_\phi}_{\mathrm{Kinetic}} + \underbrace{F(\mu,\Sigma,\phi)}_{\mathrm{Potential}}$',
+            r'$H = T_\mu + T_\Sigma + T_\phi + F(\mu,\Sigma,\phi)$',
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
+    ax.text(5, block_y - 3.4,
+            r'(Kinetic)          (Potential)',
+            ha='center', fontsize=7, color='gray')
 
     # Energy conservation badge
     ax.text(8.5, block_y - 1.2, r'$\Delta H \approx 0$', fontsize=8,
@@ -178,7 +181,7 @@ def create_hamiltonian_architecture(ax):
     draw_arrow(ax, (5, block_y + 1.1), (5, block_y + 0.9))
     draw_arrow(ax, (5, block_y + 0.1), (5, block_y - 0.8))
     draw_arrow(ax, (5, block_y - 1.6), (5, block_y - 1.8))
-    draw_arrow(ax, (5, block_y - 3.3), (5, 0.9))
+    draw_arrow(ax, (5, block_y - 3.8), (5, 0.9))
 
     # Residual
     ax.annotate('', xy=(7.5, block_y - 1.2), xytext=(7.5, block_y + 1.5),
@@ -187,7 +190,7 @@ def create_hamiltonian_architecture(ax):
     ax.text(8.2, block_y + 0.2, '+', fontsize=12, color='gray')
 
     # Block label
-    ax.add_patch(Rectangle((2.8, block_y - 3.4), 4.4, 5.6,
+    ax.add_patch(Rectangle((2.8, block_y - 3.9), 4.4, 6.1,
                            fill=False, edgecolor='gray', linestyle='--', linewidth=1))
     ax.text(2.9, block_y + 2.1, '×L layers', fontsize=8, color='gray')
 
