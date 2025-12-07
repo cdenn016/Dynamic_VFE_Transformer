@@ -553,12 +553,12 @@ class IrrepMultiHeadAttention(nn.Module):
                 self.irrep_labels.append(label)
                 total_dim += dim
 
-        # Pad to embed_dim if needed
+        # Pad to embed_dim if needed - add SCALAR heads (dim=1), not one big head
         if total_dim < embed_dim:
-            # Add extra ℓ0 (scalar) channels
             padding = embed_dim - total_dim
-            self.irrep_dims.append(padding)
-            self.irrep_labels.append('ℓ0_pad')
+            for _ in range(padding):
+                self.irrep_dims.append(1)  # Each padding is a scalar head
+                self.irrep_labels.append('ℓ0_pad')
             total_dim = embed_dim
         elif total_dim > embed_dim:
             raise ValueError(
@@ -567,6 +567,36 @@ class IrrepMultiHeadAttention(nn.Module):
 
         self.n_heads = len(self.irrep_dims)
         self.total_dim = total_dim
+
+        # =================================================================
+        # Create proper SO(3) generators for each head dimension
+        # =================================================================
+        # For ℓ=0 (dim=1): Zero generator (scalars don't transform)
+        # For ℓ≥1 (dim=3,5,7,...): Proper Wigner D-matrix generators
+        #
+        # Store as a list of buffers (can't use ParameterList since non-trainable)
+        self.head_generators = nn.ModuleList()  # Will hold generator-holding modules
+
+        for head_idx, dim in enumerate(self.irrep_dims):
+            if dim == 1:
+                # Scalar irrep: zero generator (no transformation)
+                gen = torch.zeros(3, 1, 1)
+            elif dim % 2 == 1 and dim >= 3:
+                # Proper SO(3) irrep: use Wigner D-matrix generators
+                gen_np = generate_so3_generators(dim)
+                gen = torch.from_numpy(gen_np).float()
+            else:
+                # Even dimension - not a valid SO(3) irrep!
+                # This shouldn't happen if irrep_spec is well-formed
+                raise ValueError(
+                    f"Head {head_idx} has dim={dim}, which is not a valid SO(3) irrep dimension. "
+                    f"SO(3) irreps must have odd dimensions (1, 3, 5, 7, ...)."
+                )
+
+            # Wrap in a module to register as buffer
+            gen_holder = nn.Module()
+            gen_holder.register_buffer('gen', gen)
+            self.head_generators.append(gen_holder)
 
         # Output projection (standard linear layer)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
@@ -618,11 +648,11 @@ class IrrepMultiHeadAttention(nn.Module):
         for head_idx, (mu_head, sigma_head, dim_head, label) in enumerate(
             zip(mu_blocks, sigma_blocks, self.irrep_dims, self.irrep_labels)
         ):
-            # Generate irrep-specific generators
-            # Create appropriately-sized SO(3) generators for this head dimension
-            # For now, use random skew-symmetric matrices (proper irrep projection is future work)
-            gen_head = torch.randn(3, dim_head, dim_head, device=generators.device, dtype=generators.dtype)
-            gen_head = 0.5 * (gen_head - gen_head.transpose(-1, -2))  # Make skew-symmetric
+            # Use proper SO(3) generators for this irrep dimension
+            # These were pre-computed in __init__ using Wigner D-matrices
+            gen_head = self.head_generators[head_idx].gen.to(
+                device=generators.device, dtype=generators.dtype
+            )
 
             # Compute attention for this head (with optional KL matrices)
             if return_attention:
