@@ -254,10 +254,9 @@ class MockMultiAgentSystem:
         agent.mu_q = mu_q.copy()
         agent.mu_p = mu_p.copy()
 
-        # Cholesky factors (gradient_engine expects these)
-        # Use validated approach from agents.py
-        agent.L_q = _compute_cholesky_robust(sigma_q, eps=1e-6)
-        agent.L_p = _compute_cholesky_robust(sigma_p, eps=1e-6)
+        # Covariance matrices (NOT Cholesky - gauge covariance requires Σ storage)
+        agent.Sigma_q = sigma_q.copy()
+        agent.Sigma_p = sigma_p.copy()
 
         # Gauge field
         agent.gauge = type('obj', (object,), {'phi': phi.copy()})()
