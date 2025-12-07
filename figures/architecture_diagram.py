@@ -300,16 +300,23 @@ def create_full_figure():
 
 def main():
     """Generate and save the figure."""
+    import os
+
     fig = create_full_figure()
 
-    # Save in multiple formats
-    fig.savefig('figures/gauge_transformer_architecture.pdf',
-                dpi=300, bbox_inches='tight', pad_inches=0.1)
-    fig.savefig('figures/gauge_transformer_architecture.png',
-                dpi=300, bbox_inches='tight', pad_inches=0.1)
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    print("✓ Saved: figures/gauge_transformer_architecture.pdf")
-    print("✓ Saved: figures/gauge_transformer_architecture.png")
+    # Create output paths relative to script location
+    pdf_path = os.path.join(script_dir, 'gauge_transformer_architecture.pdf')
+    png_path = os.path.join(script_dir, 'gauge_transformer_architecture.png')
+
+    # Save in multiple formats
+    fig.savefig(pdf_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
+    fig.savefig(png_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
+
+    print(f"✓ Saved: {pdf_path}")
+    print(f"✓ Saved: {png_path}")
 
     plt.show()
 
