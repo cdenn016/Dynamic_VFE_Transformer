@@ -131,7 +131,7 @@ def test_reversibility(
         print(f"  Total time T: {n_steps * dt}")
 
     # Compute initial Hamiltonian
-    H_0 = potential.forward(
+    H_0, _ = potential.forward(
         state_0, mu_prior, Sigma_prior, beta, None, None
     )
 
@@ -145,7 +145,7 @@ def test_reversibility(
     )
 
     # Compute final Hamiltonian
-    H_T = potential.forward(
+    H_T, _ = potential.forward(
         state_T, mu_prior, Sigma_prior, beta, None, None
     )
 
