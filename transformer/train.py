@@ -37,6 +37,74 @@ import numpy as np
 # Import attention computation for gamma term
 from transformer.attention import compute_attention_weights
 
+
+# =============================================================================
+# Gaussian KL Divergence (Proper Implementation)
+# =============================================================================
+
+def gaussian_kl_divergence(
+    mu_q: torch.Tensor,      # (B, N, K) or (B, N, K)
+    sigma_q: torch.Tensor,   # (B, N, K, K) or None (uses identity)
+    mu_p: torch.Tensor,      # (B, N, K)
+    sigma_p: torch.Tensor,   # (B, N, K, K) or None (uses identity)
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Compute KL(N(μ_q, Σ_q) || N(μ_p, Σ_p)) for Gaussian distributions.
+
+    KL = 0.5 * [tr(Σ_p⁻¹ Σ_q) + (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q) - K + log(|Σ_p|/|Σ_q|)]
+
+    Args:
+        mu_q: Posterior means (B, N, K)
+        sigma_q: Posterior covariances (B, N, K, K) or None
+        mu_p: Prior means (B, N, K)
+        sigma_p: Prior covariances (B, N, K, K) or None
+        eps: Numerical stability constant
+
+    Returns:
+        kl: KL divergence per agent, shape (B, N)
+    """
+    K = mu_q.shape[-1]
+    device = mu_q.device
+    dtype = mu_q.dtype
+
+    # Default to identity covariances if not provided
+    if sigma_q is None:
+        sigma_q = torch.eye(K, device=device, dtype=dtype).expand(*mu_q.shape[:-1], K, K)
+    if sigma_p is None:
+        sigma_p = torch.eye(K, device=device, dtype=dtype).expand(*mu_p.shape[:-1], K, K)
+
+    # Regularize for numerical stability
+    sigma_q_reg = sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
+    sigma_p_reg = sigma_p + eps * torch.eye(K, device=device, dtype=dtype)
+
+    # Compute Σ_p⁻¹ via Cholesky
+    L_p = torch.linalg.cholesky(sigma_p_reg)
+
+    # Trace term: tr(Σ_p⁻¹ Σ_q)
+    # Solve L_p @ Y = Σ_q for Y, then tr(Σ_p⁻¹ Σ_q) = tr(L_p⁻ᵀ Y)
+    Y = torch.linalg.solve_triangular(L_p, sigma_q_reg, upper=False)
+    Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+    trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)  # (B, N)
+
+    # Mahalanobis term: (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q)
+    delta_mu = mu_p - mu_q  # (B, N, K)
+    # Solve L_p @ v = delta_mu
+    v = torch.linalg.solve_triangular(L_p, delta_mu.unsqueeze(-1), upper=False).squeeze(-1)
+    mahal_term = torch.sum(v ** 2, dim=-1)  # (B, N)
+
+    # Log determinant terms
+    logdet_p = 2.0 * torch.sum(torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1)
+    L_q = torch.linalg.cholesky(sigma_q_reg)
+    logdet_q = 2.0 * torch.sum(torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1)
+    logdet_term = logdet_p - logdet_q  # (B, N)
+
+    # KL divergence
+    kl = 0.5 * (trace_term + mahal_term - K + logdet_term)
+
+    # Clamp to non-negative (numerical safety)
+    return torch.clamp(kl, min=0.0)
+
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
@@ -156,22 +224,26 @@ def compute_free_energy_loss(
         belief_align_loss = torch.tensor(0.0, device=ce_loss.device)
 
     # =================================================================
-    # 3. Self-Consistency: α·KL(q||p)
+    # 3. Self-Consistency: α·KL(q||p) - Beliefs should stay close to priors
+    # =================================================================
+    # This is the key VFE term that pulls evolved beliefs back toward
+    # their embedding priors. Without this, beliefs can drift arbitrarily.
+    #
+    # KL(q||p) = KL(N(μ_q, Σ_q) || N(μ_p, Σ_p))
+    #
+    # This provides gradients to embeddings even when belief evolution is detached!
     # =================================================================
     if alpha > 0.0:
-        # KL(N(μ,Σ) || N(0,I)) = 0.5·(tr(Σ) + μ^Tμ - K - log|Σ|)
-        mu_squared_norm = torch.sum(mu_q ** 2, dim=-1).mean()
+        # Proper KL divergence between evolved beliefs and embedding priors
+        kl_per_agent = gaussian_kl_divergence(
+            mu_q=mu_q,        # Evolved beliefs
+            sigma_q=sigma_q,  # Evolved covariances (or None)
+            mu_p=mu_p,        # Embedding priors
+            sigma_p=sigma_p,  # Embedding covariances
+        )  # (B, N)
 
-        if sigma_q is not None:
-            trace_sigma = torch.diagonal(sigma_q, dim1=-2, dim2=-1).sum(dim=-1).mean()
-            L = torch.linalg.cholesky(sigma_q + 1e-6 * torch.eye(sigma_q.shape[-1], device=sigma_q.device))
-            logdet_sigma = 2.0 * torch.sum(torch.log(torch.diagonal(L, dim1=-2, dim2=-1) + 1e-8), dim=-1).mean()
-            K = mu_q.shape[-1]
-            kl_self = 0.5 * (trace_sigma + mu_squared_norm - K - logdet_sigma)
-        else:
-            kl_self = 0.5 * mu_squared_norm
-
-        self_consistency_loss = alpha * kl_self
+        # Average over batch and agents
+        self_consistency_loss = alpha * kl_per_agent.mean()
     else:
         self_consistency_loss = torch.tensor(0.0, device=ce_loss.device)
 
@@ -293,8 +365,11 @@ class TrainingConfig:
     min_lr: float = 3e-5
 
     # Free energy weights
-    alpha: float = 0.0           # Self-consistency regularization
-    lambda_beta: float = 1.0     # Belief alignment (CRUCIAL!)
+    # NOTE: alpha > 0 is CRITICAL for gradient flow to embeddings!
+    # KL(q||p) pulls evolved beliefs back to embedding priors and provides
+    # gradients to mu_embed even when FFN outputs are detached.
+    alpha: float = 0.1           # Self-consistency: KL(q||p) to embedding priors
+    lambda_beta: float = 1.0     # Belief alignment: Σβ_ij·KL (CRUCIAL!)
     lambda_gamma: float = 0.0    # Model alignment (disabled by default)
     kappa_gamma: float = 1.0     # Temperature for γ_ij coupling weights
 
