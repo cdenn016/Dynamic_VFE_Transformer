@@ -30,7 +30,7 @@ from transformer.variational_ffn import (
     VariationalFFNFull,
     VariationalFFNGradientEngine
 )
-from transformer.hamiltonian_ffn import HamiltonianFFN
+from transformer.hamiltonian_ffn import HamiltonianFFN, MassConfig
 
 
 class GaugeFFN(nn.Module):
@@ -53,7 +53,7 @@ class GaugeFFN(nn.Module):
         hidden_dim: int,
         generators: Optional[torch.Tensor] = None,  # (3, K, K)
         dropout: float = 0.1,
-        mode: Literal['learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'hamiltonian'] = 'learned',
+        mode: Literal['learned', 'standard', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE', 'hamiltonian'] = 'learned',
         # Variational parameters
         alpha: float = 0.001,
         tau_eff: float = 1.0,
@@ -71,6 +71,11 @@ class GaugeFFN(nn.Module):
         hamiltonian_update_phi: bool = False,
         hamiltonian_momentum_scale: float = 1.0,
         hamiltonian_gamma: float = 0.0,  # Damping (0 = pure Hamiltonian)
+        # Hamiltonian mass configuration (from Inertia of Belief paper)
+        hamiltonian_mass_use_prior: bool = True,        # Λ_p term
+        hamiltonian_mass_use_observation: bool = False,  # Λ_o term
+        hamiltonian_mass_use_incoming_social: bool = False,  # Σβ_{ik}Λ̃_{qk} term
+        hamiltonian_mass_use_outgoing_recoil: bool = False,  # Σβ_{ji}Λ_{qi} term
     ):
         """
         Initialize unified FFN.
@@ -80,7 +85,12 @@ class GaugeFFN(nn.Module):
             hidden_dim: Hidden layer size (for learned mode)
             generators: SO(3) generators (required for variational/hamiltonian modes)
             dropout: Dropout rate (for learned mode)
-            mode: 'learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'hamiltonian'
+            mode: FFN mode:
+                - 'learned' or 'standard': Standard MLP (default)
+                - 'variational_approx': Approximate variational descent (legacy)
+                - 'variational_full': Full variational descent (legacy)
+                - 'variational_gradient_engine' or 'VFE': Full active inference
+                - 'hamiltonian': Symplectic Hamiltonian dynamics
             alpha: Prior weight (variational/hamiltonian)
             tau_eff: Temperature (variational approx/full)
             kappa: Softmax temperature (variational_full/hamiltonian)
@@ -95,11 +105,25 @@ class GaugeFFN(nn.Module):
             hamiltonian_update_phi: Evolve gauge field in Hamiltonian dynamics?
             hamiltonian_momentum_scale: Scale for initial momentum sampling
             hamiltonian_gamma: Damping coefficient (0 = pure Hamiltonian, >0 = Langevin-like)
+            hamiltonian_mass_use_prior: Include prior precision Λ_p in mass (Inertia of Belief paper)
+            hamiltonian_mass_use_observation: Include observation precision Λ_o in mass
+            hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
+            hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
         """
         super().__init__()
 
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
+
+        # =================================================================
+        # Normalize mode names for clean three-mode architecture:
+        #   - 'standard' -> 'learned' (baseline MLP)
+        #   - 'VFE' -> 'variational_gradient_engine' (variational free energy)
+        # =================================================================
+        if mode == 'standard':
+            mode = 'learned'
+        elif mode == 'VFE':
+            mode = 'variational_gradient_engine'
         self.mode = mode
 
         # =================================================================
@@ -160,6 +184,14 @@ class GaugeFFN(nn.Module):
             if generators is None:
                 raise ValueError("generators required for hamiltonian mode")
 
+            # Create MassConfig from Inertia of Belief paper parameters
+            mass_config = MassConfig(
+                use_prior_precision=hamiltonian_mass_use_prior,
+                use_observation_precision=hamiltonian_mass_use_observation,
+                use_incoming_social=hamiltonian_mass_use_incoming_social,
+                use_outgoing_recoil=hamiltonian_mass_use_outgoing_recoil,
+            )
+
             self.hamiltonian_ffn = HamiltonianFFN(
                 embed_dim=embed_dim,
                 generators=generators,
@@ -171,6 +203,7 @@ class GaugeFFN(nn.Module):
                 update_Sigma=update_sigma,
                 update_phi=hamiltonian_update_phi,
                 momentum_scale=hamiltonian_momentum_scale,
+                mass_config=mass_config,  # Extended mass from paper
                 gamma=hamiltonian_gamma,
             )
 
@@ -289,10 +322,22 @@ class GaugeFFN(nn.Module):
             raise ValueError(f"Unknown mode: {self.mode}")
 
     def set_mode(self, mode: str):
-        """Switch FFN mode at runtime."""
+        """
+        Switch FFN mode at runtime.
+
+        Mode aliases:
+            - 'standard' -> 'learned' (baseline MLP)
+            - 'VFE' -> 'variational_gradient_engine' (variational free energy)
+        """
+        # Normalize mode aliases
+        if mode == 'standard':
+            mode = 'learned'
+        elif mode == 'VFE':
+            mode = 'variational_gradient_engine'
+
         valid_modes = ['learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'hamiltonian']
         if mode not in valid_modes:
-            raise ValueError(f"Invalid mode: {mode}. Valid modes: {valid_modes}")
+            raise ValueError(f"Invalid mode: {mode}. Valid modes: {valid_modes} (or aliases: 'standard', 'VFE')")
 
         if mode in ['variational_approx', 'variational_full', 'variational_gradient_engine']:
             if not hasattr(self, 'variational_ffn'):

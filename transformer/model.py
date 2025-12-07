@@ -105,6 +105,18 @@ class GaugeTransformerLM(nn.Module):
         ffn_lambda_phi = config.get('ffn_lambda_phi', 0.0)
         ffn_update_sigma = config.get('ffn_update_sigma', True)
 
+        # Hamiltonian FFN config
+        ffn_hamiltonian_dt = config.get('ffn_hamiltonian_dt', 0.01)
+        ffn_hamiltonian_n_steps = config.get('ffn_hamiltonian_n_steps', 10)
+        ffn_hamiltonian_momentum_scale = config.get('ffn_hamiltonian_momentum_scale', 1.0)
+        ffn_hamiltonian_gamma = config.get('ffn_hamiltonian_gamma', 0.0)
+
+        # Hamiltonian mass config (from Inertia of Belief paper)
+        ffn_hamiltonian_mass_use_prior = config.get('ffn_hamiltonian_mass_use_prior', True)
+        ffn_hamiltonian_mass_use_observation = config.get('ffn_hamiltonian_mass_use_observation', False)
+        ffn_hamiltonian_mass_use_incoming_social = config.get('ffn_hamiltonian_mass_use_incoming_social', False)
+        ffn_hamiltonian_mass_use_outgoing_recoil = config.get('ffn_hamiltonian_mass_use_outgoing_recoil', False)
+
         # Sparse attention/FFN config
         self.attention_pattern = config.get('attention_pattern', 'full')
         self.attention_window = config.get('attention_window', 64)
@@ -170,6 +182,16 @@ class GaugeTransformerLM(nn.Module):
             ffn_lambda_prior=ffn_lambda_prior,
             ffn_lambda_phi=ffn_lambda_phi,
             ffn_update_sigma=ffn_update_sigma,
+            # Hamiltonian parameters
+            ffn_hamiltonian_dt=ffn_hamiltonian_dt,
+            ffn_hamiltonian_n_steps=ffn_hamiltonian_n_steps,
+            ffn_hamiltonian_momentum_scale=ffn_hamiltonian_momentum_scale,
+            ffn_hamiltonian_gamma=ffn_hamiltonian_gamma,
+            # Hamiltonian mass config (from Inertia of Belief paper)
+            ffn_hamiltonian_mass_use_prior=ffn_hamiltonian_mass_use_prior,
+            ffn_hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
+            ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
+            ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
         )
 
         # =================================================================
