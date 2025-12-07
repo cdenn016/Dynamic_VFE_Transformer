@@ -53,14 +53,113 @@ import json
 import csv
 import time
 import math
+import subprocess
+import platform
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 
 from transformer.model import GaugeTransformerLM
 from transformer.data import create_byte_dataloaders
 from transformer.train import compute_free_energy_loss
 from transformer.train_fast import FastTrainer, FastTrainingConfig
+
+
+def get_git_info() -> Dict[str, str]:
+    """Get current git commit info."""
+    try:
+        commit = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+
+        branch = subprocess.check_output(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+
+        # Check for uncommitted changes
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+        dirty = len(status) > 0
+
+        return {
+            'commit': commit,
+            'branch': branch,
+            'dirty': dirty,
+        }
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {'commit': 'unknown', 'branch': 'unknown', 'dirty': False}
+
+
+def get_system_info() -> Dict[str, Any]:
+    """Get system/hardware information."""
+    info = {
+        'platform': platform.platform(),
+        'python_version': platform.python_version(),
+        'torch_version': torch.__version__,
+        'cuda_available': torch.cuda.is_available(),
+    }
+
+    if torch.cuda.is_available():
+        info['cuda_version'] = torch.version.cuda
+        info['gpu_name'] = torch.cuda.get_device_name(0)
+        info['gpu_count'] = torch.cuda.device_count()
+        info['gpu_memory_gb'] = torch.cuda.get_device_properties(0).total_memory / 1e9
+
+    return info
+
+
+def save_experiment_config(
+    config: Dict[str, Any],
+    ffn_mode: str,
+    checkpoint_dir: Path,
+    args: argparse.Namespace = None,
+) -> Path:
+    """
+    Save complete experiment configuration to JSON.
+
+    Args:
+        config: Model/training configuration dictionary
+        ffn_mode: FFN mode being used
+        checkpoint_dir: Directory to save config
+        args: Command-line arguments (if available)
+
+    Returns:
+        Path to saved config file
+    """
+    experiment_config = {
+        # Metadata
+        'experiment_id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+        'timestamp': datetime.now().isoformat(),
+        'ffn_mode': ffn_mode,
+
+        # Full model/training config
+        'config': config,
+
+        # Command-line args (if available)
+        'args': vars(args) if args else None,
+
+        # Git info for reproducibility
+        'git': get_git_info(),
+
+        # System info
+        'system': get_system_info(),
+    }
+
+    # Save to checkpoint directory
+    config_path = checkpoint_dir / 'experiment_config.json'
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(config_path, 'w') as f:
+        json.dump(experiment_config, f, indent=2, default=str)
+
+    print(f"📋 Saved experiment config: {config_path}")
+
+    return config_path
 
 
 # ============================================================================
@@ -459,6 +558,7 @@ def run_single_experiment(
     device: torch.device,
     checkpoint_dir: Path,
     use_wandb: bool = False,
+    args: argparse.Namespace = None,
 ) -> Dict:
     """
     Run a single training experiment.
@@ -469,6 +569,7 @@ def run_single_experiment(
         device: Device to train on
         checkpoint_dir: Directory to save checkpoints
         use_wandb: Whether to use Weights & Biases logging
+        args: Command-line arguments for logging
 
     Returns:
         Dictionary with final metrics
@@ -480,6 +581,13 @@ def run_single_experiment(
     # Override FFN mode in config
     config = config.copy()
     config['ffn_mode'] = ffn_mode
+
+    # Create experiment-specific checkpoint directory
+    exp_checkpoint_dir = checkpoint_dir / f"ffn_{ffn_mode}"
+    exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save experiment configuration at the START
+    save_experiment_config(config, ffn_mode, exp_checkpoint_dir, args)
 
     # =================================================================
     # Data Loading (Byte-level - no external packages required!)
@@ -525,10 +633,6 @@ def run_single_experiment(
     # =================================================================
     # Training Configuration
     # =================================================================
-
-    # Create experiment-specific checkpoint directory
-    exp_checkpoint_dir = checkpoint_dir / f"ffn_{ffn_mode}"
-    exp_checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     train_config = FastTrainingConfig(
         max_steps=config['max_steps'],
@@ -653,16 +757,17 @@ def run_ablation_study(
     checkpoint_dir: Path,
     use_wandb: bool = False,
     enable_sigma_phi: bool = False,
+    args: argparse.Namespace = None,
 ) -> List[Dict]:
     """
     Run complete ablation study across all three FFN modes.
 
     Args:
-        base_config: 'debug', 'standard', or 'extended'
         device: Device to train on
         checkpoint_dir: Directory to save checkpoints
         use_wandb: Whether to use Weights & Biases logging
         enable_sigma_phi: Enable learning Σ (covariances) and φ (gauge frames)
+        args: Command-line arguments for logging
 
     Returns:
         List of result dictionaries for each FFN mode
@@ -717,6 +822,7 @@ def run_ablation_study(
             device=device,
             checkpoint_dir=checkpoint_dir,
             use_wandb=use_wandb,
+            args=args,
         )
 
         if result is not None:
@@ -826,6 +932,7 @@ def main():
             checkpoint_dir=checkpoint_dir,
             use_wandb=args.use_wandb,
             enable_sigma_phi=args.enable_sigma_phi,
+            args=args,
         )
 
     else:
@@ -871,6 +978,7 @@ def main():
             device=device,
             checkpoint_dir=checkpoint_dir,
             use_wandb=args.use_wandb,
+            args=args,
         )
 
         if result is not None:
