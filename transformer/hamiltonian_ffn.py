@@ -312,20 +312,7 @@ class InertiaOfBeliefMass(nn.Module):
             # Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T
             # M_incoming = Σ_k β_{ik} Λ̃_{qk}
 
-            # Expand phi for broadcasting: phi_i[b,i] and phi_k[b,k]
-            phi_i = phi.unsqueeze(2)  # (B, N, 1, 3)
-            phi_k = phi.unsqueeze(1)  # (B, 1, N, 3)
-
-            # Compute transport for all pairs (vectorized)
-            # phi_i_expanded: (B, N, N, 3), phi_k_expanded: (B, N, N, 3)
-            phi_i_expanded = phi_i.expand(-1, -1, N, -1).reshape(B * N * N, 3)
-            phi_k_expanded = phi_k.expand(-1, N, -1, -1).reshape(B * N * N, 3)
-
-            # Compute Ω_{ik} for all pairs
-            phi_diff_matrix = torch.einsum('bc,ckl->bkl',
-                phi_i_expanded, self.generators.unsqueeze(0).expand(B*N*N, -1, -1, -1).reshape(B*N*N, 3, K, K).sum(dim=1))
-
-            # Simpler approach: compute per-agent mass using loop (cleaner, still efficient)
+            # Compute per-agent mass using loop (cleaner, still efficient for typical N)
             M_incoming = torch.zeros(B, N, K, K, device=device, dtype=dtype)
             for k in range(N):
                 # Get phi for all i and this k
