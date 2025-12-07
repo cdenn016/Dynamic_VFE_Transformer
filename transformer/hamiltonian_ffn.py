@@ -256,7 +256,7 @@ class InertiaOfBeliefMass(nn.Module):
         Sigma_prior: torch.Tensor,   # (B, N, K, K) - prior covariance
         Sigma_q: torch.Tensor,       # (B, N, K, K) - posterior covariance
         phi: torch.Tensor,           # (B, N, 3) - gauge field
-        beta: Optional[torch.Tensor] = None,  # (B, N, N) - attention weights
+        beta: Optional[torch.Tensor] = None,  # (B, N, N) or (B, n_heads, N, N) - attention weights
         Sigma_obs: Optional[torch.Tensor] = None,  # (B, N, K, K) - observation covariance
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -268,7 +268,7 @@ class InertiaOfBeliefMass(nn.Module):
             Sigma_prior: Prior covariance (for Λ_p = Σ_p⁻¹)
             Sigma_q: Posterior covariance (for Λ_q = Σ_q⁻¹)
             phi: Gauge field for transport
-            beta: Attention weights (for social terms)
+            beta: Attention weights - can be (B, N, N) or (B, n_heads, N, N)
             Sigma_obs: Observation covariance (for Λ_o = Σ_o⁻¹)
 
         Returns:
@@ -279,6 +279,12 @@ class InertiaOfBeliefMass(nn.Module):
         device = Sigma_prior.device
         dtype = Sigma_prior.dtype
         eps = self.config.eps
+
+        # Handle multi-head attention: average across heads if needed
+        # beta can be (B, N, N) or (B, n_heads, N, N)
+        if beta is not None and beta.dim() == 4:
+            # Multi-head attention: average across heads
+            beta = beta.mean(dim=1)  # (B, N, N)
 
         # Initialize mass as zero
         M = torch.zeros(B, N, K, K, device=device, dtype=dtype)
