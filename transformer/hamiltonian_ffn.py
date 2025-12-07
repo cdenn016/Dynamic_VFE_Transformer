@@ -64,7 +64,7 @@ Date: December 2025
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Literal
+from typing import Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -306,32 +306,42 @@ class InertiaOfBeliefMass(nn.Module):
             M = M + Lambda_o
 
         # =====================================================================
+        # Pre-compute Lambda_q once if needed for social terms (speed-up)
+        # =====================================================================
+        need_Lambda_q = (self.config.use_incoming_social or self.config.use_outgoing_recoil) and beta is not None
+        Lambda_q = None
+        if need_Lambda_q:
+            Sigma_q_reg = Sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
+            Lambda_q = torch.linalg.inv(Sigma_q_reg)  # (B, N, K, K)
+
+        # =====================================================================
         # 3. Incoming social precision: Σ_k β_{ik} Λ̃_{qk}
         # "Being pulled toward confident neighbors"
         # =====================================================================
         if self.config.use_incoming_social and beta is not None:
-            # Compute posterior precision
-            Sigma_q_reg = Sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
-            Lambda_q = torch.linalg.inv(Sigma_q_reg)  # (B, N, K, K)
+            # Pre-compute all matrix exponentials once (speed-up)
+            # phi_matrix: (B, N, K, K), exp_phi: (B, N, K, K)
+            phi_matrix = torch.einsum('bnc,ckl->bnkl', phi, self.generators)
+            exp_phi = torch.linalg.matrix_exp(phi_matrix)      # e^{φ_i} for all i
+            exp_neg_phi = torch.linalg.matrix_exp(-phi_matrix)  # e^{-φ_k} for all k
 
-            # For each agent i, sum over neighbors k
-            # Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T
-            # M_incoming = Σ_k β_{ik} Λ̃_{qk}
+            # Vectorized: compute Ω_{ik} = e^{φ_i} @ e^{-φ_k} for all pairs
+            # exp_phi: (B, N, K, K) -> (B, N, 1, K, K)
+            # exp_neg_phi: (B, N, K, K) -> (B, 1, N, K, K)
+            # Omega_all: (B, N, N, K, K) where Omega_all[b,i,k] = Ω_{ik}
+            Omega_all = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
 
-            # Compute per-agent mass using loop (cleaner, still efficient for typical N)
-            M_incoming = torch.zeros(B, N, K, K, device=device, dtype=dtype)
-            for k in range(N):
-                # Get phi for all i and this k
-                phi_all_i = phi  # (B, N, 3)
-                phi_this_k = phi[:, k:k+1, :].expand(-1, N, -1)  # (B, N, 3)
+            # Transport all precisions: Λ̃_{qk} = Ω_{ik} @ Λ_{qk} @ Ω_{ik}^T
+            # Lambda_q: (B, N, K, K) -> (B, 1, N, K, K) for k dimension
+            # Result: (B, N, N, K, K) where [b,i,k] = transported precision from k to i
+            Lambda_transported_all = torch.einsum(
+                'bijkl,bjlm,bijmn->bijkn',
+                Omega_all, Lambda_q, Omega_all.transpose(-1, -2)
+            )
 
-                # Transport Lambda_q[k] to each agent i's frame
-                Lambda_k = Lambda_q[:, k:k+1, :, :].expand(-1, N, -1, -1)  # (B, N, K, K)
-                Lambda_transported = self.transport_precision(Lambda_k, phi_all_i, phi_this_k)
-
-                # Weight by attention β_{ik}
-                beta_ik = beta[:, :, k:k+1, None]  # (B, N, 1, 1)
-                M_incoming = M_incoming + beta_ik * Lambda_transported
+            # Weight by attention and sum: M_incoming[b,i] = Σ_k β_{ik} Λ̃_{qk}
+            # beta: (B, N, N), Lambda_transported_all: (B, N, N, K, K)
+            M_incoming = torch.einsum('bik,bikmn->bimn', beta, Lambda_transported_all)
 
             M = M + M_incoming
 
@@ -340,14 +350,6 @@ class InertiaOfBeliefMass(nn.Module):
         # "Newton's 3rd law from influencing others"
         # =====================================================================
         if self.config.use_outgoing_recoil and beta is not None:
-            # Compute posterior precision
-            Sigma_q_reg = Sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
-            Lambda_q = torch.linalg.inv(Sigma_q_reg)  # (B, N, K, K)
-
-            # For each agent i, sum over agents j that observe i
-            # M_outgoing = Σ_j β_{ji} Λ_{qi}
-            # Note: β_{ji} is how much j attends to i (i is the key)
-
             # Sum over j: Σ_j β_{ji} = (sum over row j of beta for column i)
             beta_sum = beta.sum(dim=1)  # (B, N) - sum of attention TO agent i
 
@@ -778,35 +780,6 @@ class HamiltonianPotential(nn.Module):
 
         kl = 0.5 * (trace_term + mahal - K + log_det_term)
         return kl
-
-    def compute_transport(
-        self,
-        phi_i: torch.Tensor,
-        phi_j: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute parallel transport operator Ω_ij = exp(φ_i) exp(-φ_j).
-
-        Args:
-            phi_i, phi_j: (B, N, 3) gauge fields
-
-        Returns:
-            Omega: (B, N, K, K) transport matrices
-        """
-        # Construct Lie algebra elements: φ · G = Σ_a φ^a G_a
-        # generators: (3, K, K)
-        # phi: (..., 3)
-        phi_matrix_i = torch.einsum('...a,aij->...ij', phi_i, self.generators)
-        phi_matrix_j = torch.einsum('...a,aij->...ij', phi_j, self.generators)
-
-        # Matrix exponentials
-        exp_phi_i = torch.matrix_exp(phi_matrix_i)
-        exp_neg_phi_j = torch.matrix_exp(-phi_matrix_j)
-
-        # Transport: Ω_ij = exp(φ_i) exp(-φ_j)
-        Omega = exp_phi_i @ exp_neg_phi_j
-
-        return Omega
 
     def forward(
         self,
