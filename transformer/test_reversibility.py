@@ -19,8 +19,9 @@ from typing import Tuple, Dict
 from transformer.hamiltonian_ffn import (
     HamiltonianFFN,
     PhaseSpaceState,
-    SymplecticLeapfrogIntegrator,
+    LeapfrogIntegrator,
     HamiltonianPotential,
+    HamiltonianKineticTerms,
 )
 
 
@@ -48,6 +49,11 @@ def test_reversibility(
     generators = generate_so3_generators(embed_dim).to(device)
 
     # Create integrator components
+    kinetic = HamiltonianKineticTerms(
+        embed_dim=embed_dim,
+        mass_matrix='fisher',
+    ).to(device)
+
     potential = HamiltonianPotential(
         embed_dim=embed_dim,
         generators=generators,
@@ -56,14 +62,13 @@ def test_reversibility(
         kappa=1.0,
     ).to(device)
 
-    integrator = SymplecticLeapfrogIntegrator(
+    integrator = LeapfrogIntegrator(
+        kinetic=kinetic,
         potential=potential,
         dt=dt,
         n_steps=n_steps,
         update_Sigma=True,
         update_phi=True,
-        gamma=0.0,  # CRITICAL: No damping for reversibility!
-        eps=1e-8,
     )
 
     # Create initial state
@@ -250,6 +255,11 @@ def test_token_attribution(
     from transformer.attention import generate_so3_generators
     generators = generate_so3_generators(embed_dim).to(device)
 
+    kinetic = HamiltonianKineticTerms(
+        embed_dim=embed_dim,
+        mass_matrix='fisher',
+    ).to(device)
+
     potential = HamiltonianPotential(
         embed_dim=embed_dim,
         generators=generators,
@@ -258,14 +268,13 @@ def test_token_attribution(
         kappa=1.0,
     ).to(device)
 
-    integrator = SymplecticLeapfrogIntegrator(
+    integrator = LeapfrogIntegrator(
+        kinetic=kinetic,
         potential=potential,
         dt=dt,
         n_steps=1,  # Single step at a time for trajectory
         update_Sigma=True,
         update_phi=True,
-        gamma=0.0,
-        eps=1e-8,
     )
 
     # Create initial state
