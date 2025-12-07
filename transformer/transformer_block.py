@@ -67,7 +67,7 @@ class GaugeTransformerBlock(nn.Module):
         evolve_phi: bool = False,
         # Variational FFN parameters
         generators: Optional[torch.Tensor] = None,  # (3, K, K)
-        ffn_mode: str = 'learned',  # 'learned', 'variational_*', 'hamiltonian'
+        ffn_mode: str = 'learned',  # 'learned', 'standard', 'VFE', 'variational_*', 'hamiltonian'
         ffn_alpha: float = 0.001,
         ffn_tau_eff: float = 1.0,
         ffn_kappa: float = 1.0,
@@ -83,6 +83,11 @@ class GaugeTransformerBlock(nn.Module):
         ffn_hamiltonian_n_steps: int = 10,
         ffn_hamiltonian_momentum_scale: float = 1.0,
         ffn_hamiltonian_gamma: float = 0.0,
+        # Hamiltonian mass configuration (from Inertia of Belief paper)
+        ffn_hamiltonian_mass_use_prior: bool = True,
+        ffn_hamiltonian_mass_use_observation: bool = False,
+        ffn_hamiltonian_mass_use_incoming_social: bool = False,
+        ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
     ):
         """
         Initialize gauge transformer block.
@@ -96,7 +101,7 @@ class GaugeTransformerBlock(nn.Module):
             evolve_sigma: If True, update covariances via attention and FFN
             evolve_phi: If True, update gauge frames via FFN
             generators: SO(3) generators (required for variational/hamiltonian modes)
-            ffn_mode: 'learned', 'variational_*', 'hamiltonian'
+            ffn_mode: 'learned'/'standard', 'VFE'/'variational_gradient_engine', 'hamiltonian'
             ffn_alpha: Prior weight for variational/hamiltonian FFN
             ffn_tau_eff: Temperature for variational FFN
             ffn_kappa: Softmax temperature for variational_full/hamiltonian
@@ -110,6 +115,10 @@ class GaugeTransformerBlock(nn.Module):
             ffn_hamiltonian_n_steps: Number of leapfrog steps (hamiltonian)
             ffn_hamiltonian_momentum_scale: Initial momentum scale (hamiltonian)
             ffn_hamiltonian_gamma: Damping coefficient (hamiltonian, 0=pure)
+            ffn_hamiltonian_mass_use_prior: Include prior precision in mass (Inertia of Belief)
+            ffn_hamiltonian_mass_use_observation: Include observation precision in mass
+            ffn_hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
+            ffn_hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
         """
         super().__init__()
         self.embed_dim = embed_dim
@@ -159,6 +168,11 @@ class GaugeTransformerBlock(nn.Module):
             hamiltonian_momentum_scale=ffn_hamiltonian_momentum_scale,
             hamiltonian_gamma=ffn_hamiltonian_gamma,
             hamiltonian_update_phi=evolve_phi,  # Use evolve_phi setting
+            # Hamiltonian mass configuration (from Inertia of Belief paper)
+            hamiltonian_mass_use_prior=ffn_hamiltonian_mass_use_prior,
+            hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
+            hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
+            hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
         )
 
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -386,6 +400,11 @@ class GaugeTransformerStack(nn.Module):
         ffn_hamiltonian_n_steps: int = 10,
         ffn_hamiltonian_momentum_scale: float = 1.0,
         ffn_hamiltonian_gamma: float = 0.0,
+        # Hamiltonian mass configuration (from Inertia of Belief paper)
+        ffn_hamiltonian_mass_use_prior: bool = True,
+        ffn_hamiltonian_mass_use_observation: bool = False,
+        ffn_hamiltonian_mass_use_incoming_social: bool = False,
+        ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
     ):
         """
         Initialize stack of transformer blocks.
@@ -400,7 +419,7 @@ class GaugeTransformerStack(nn.Module):
             evolve_sigma: If True, covariances evolve through layers
             evolve_phi: If True, gauge frames evolve through layers
             generators: SO(3) generators (for variational/hamiltonian FFN)
-            ffn_mode: 'learned', 'variational_*', or 'hamiltonian'
+            ffn_mode: 'learned'/'standard', 'VFE'/'variational_gradient_engine', 'hamiltonian'
             ffn_alpha: Prior weight (variational/hamiltonian)
             ffn_tau_eff: Temperature (variational)
             ffn_kappa: Softmax temperature (variational_full/hamiltonian)
@@ -414,6 +433,10 @@ class GaugeTransformerStack(nn.Module):
             ffn_hamiltonian_n_steps: Number of leapfrog steps (hamiltonian)
             ffn_hamiltonian_momentum_scale: Initial momentum scale (hamiltonian)
             ffn_hamiltonian_gamma: Damping coefficient (hamiltonian)
+            ffn_hamiltonian_mass_use_prior: Include prior precision in mass (Inertia of Belief)
+            ffn_hamiltonian_mass_use_observation: Include observation precision in mass
+            ffn_hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
+            ffn_hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
         """
         super().__init__()
         self.n_layers = n_layers
@@ -445,6 +468,11 @@ class GaugeTransformerStack(nn.Module):
                 ffn_hamiltonian_n_steps=ffn_hamiltonian_n_steps,
                 ffn_hamiltonian_momentum_scale=ffn_hamiltonian_momentum_scale,
                 ffn_hamiltonian_gamma=ffn_hamiltonian_gamma,
+                # Hamiltonian mass configuration (from Inertia of Belief paper)
+                ffn_hamiltonian_mass_use_prior=ffn_hamiltonian_mass_use_prior,
+                ffn_hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
+                ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
+                ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
             )
             for _ in range(n_layers)
         ])

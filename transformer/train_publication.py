@@ -205,11 +205,19 @@ PUBLICATION_CONFIG = {
     'ffn_pattern': 'full',
     'ffn_window': 32,
 
-    # Hamiltonian FFN parameters (NEW!)
+    # Hamiltonian FFN parameters
     'ffn_hamiltonian_dt': 0.01,           # Leapfrog time step
     'ffn_hamiltonian_n_steps': 10,        # Integration steps per forward pass
     'ffn_hamiltonian_momentum_scale': 0.5, # Initial momentum scale
     'ffn_hamiltonian_gamma': 0.0,         # Damping (0 = pure Hamiltonian, >0 = Langevin-like)
+
+    # Hamiltonian Mass Configuration (from "The Inertia of Belief" paper, Eq. 20)
+    # M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+    # Each term can be toggled independently for ablation studies
+    'ffn_hamiltonian_mass_use_prior': True,           # Λ_p: Prior precision (default: True)
+    'ffn_hamiltonian_mass_use_observation': False,    # Λ_o: Observation precision (sensory grounding)
+    'ffn_hamiltonian_mass_use_incoming_social': False, # Σβ_{ik}Λ̃_{qk}: Being pulled toward neighbors
+    'ffn_hamiltonian_mass_use_outgoing_recoil': False, # Σβ_{ji}Λ_{qi}: Newton's 3rd law recoil
 
     # Training (optimized for convergence)
     'batch_size': 8,             # Larger batches for stability

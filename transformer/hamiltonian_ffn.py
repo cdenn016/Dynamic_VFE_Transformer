@@ -4,28 +4,40 @@ Hamiltonian Feedforward Network for Gauge-Theoretic Transformer
 
 Replaces gradient-based variational FFN with Hamiltonian dynamics.
 
-FAITHFUL TO INFORMATIONAL GAUGE THEORY
---------------------------------------
+FAITHFUL TO INFORMATIONAL GAUGE THEORY & INERTIA OF BELIEF
+-----------------------------------------------------------
+Implements the extended mass formula from "The Inertia of Belief" paper:
+
+    M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+where (Eq. 20 in paper):
+    - Λ_{pi} = Prior precision (resistance from prior expectations)
+    - Λ_{oi} = Observation precision (sensory grounding)
+    - Σ_k β_{ik} Λ̃_{qk} = Incoming social precision (being pulled toward confident neighbors)
+    - Σ_j β_{ji} Λ_{qi} = Outgoing recoil precision (Newton's 3rd law from influencing others)
+
+And Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T is the transported precision via gauge connection.
+
 From field_theory.py, the complete Hamiltonian is:
 
     H = T_μ + T_Σ + T_φ + V
 
 where:
-    T_μ = (1/2) π_μᵀ Σ_p π_μ              (Fisher-Rao metric)
+    T_μ = (1/2) π_μᵀ M⁻¹ π_μ              (Fisher-Rao metric with extended mass)
     T_Σ = (1/4) tr(Σ⁻¹ Σ̇ Σ⁻¹ Σ̇)          (SPD manifold metric)
     T_φ = (1/2) ⟨π_φ, π_φ⟩_𝔤              (Killing form on Lie algebra)
     V   = Free Energy Functional           (from free_energy_clean.py)
 
 Conjugate momenta:
-    π_μ = Σ_p⁻¹ μ̇       → μ̇ = Σ_p π_μ     (Fisher mass matrix)
+    π_μ = M μ̇            → μ̇ = M⁻¹ π_μ    (Extended mass matrix from paper)
     π_Σ = ½ Σ⁻¹ Σ̇ Σ⁻¹   → Σ̇ = 2 Σ π_Σ Σ   (SPD geometry)
     π_φ = φ̇             → φ̇ = π_φ         (trivial for gauge)
 
 Hamilton's equations:
-    dμ/dt  = ∂H/∂π_μ = Σ_p π_μ
+    dμ/dt  = ∂H/∂π_μ = M⁻¹ π_μ
     dΣ/dt  = ∂H/∂π_Σ = 2 Σ π_Σ Σ
     dφ/dt  = ∂H/∂π_φ = π_φ
-    dπ_μ/dt  = -∂V/∂μ
+    dπ_μ/dt  = -∂V/∂μ - (∂T/∂μ if mass depends on μ)
     dπ_Σ/dt  = -∂V/∂Σ + (SPD curvature correction)
     dπ_φ/dt  = -∂V/∂φ
 
@@ -104,6 +116,275 @@ class PhaseSpaceState:
             pi_Sigma=self.pi_Sigma.clone(),
             pi_phi=self.pi_phi.clone(),
         )
+
+
+@dataclass
+class MassConfig:
+    """
+    Configuration for the extended mass formula from "The Inertia of Belief".
+
+    The complete mass is:
+        M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+    Each term can be toggled independently for ablation studies.
+    """
+    use_prior_precision: bool = True      # Λ_p: Prior precision (always on by default)
+    use_observation_precision: bool = False  # Λ_o: Observation precision (sensory grounding)
+    use_incoming_social: bool = False     # Σβ_{ik}Λ̃_{qk}: Being pulled toward neighbors
+    use_outgoing_recoil: bool = False     # Σβ_{ji}Λ_{qi}: Newton's 3rd law recoil
+
+    # Regularization
+    eps: float = 1e-6                     # For numerical stability
+    min_eigenvalue: float = 1e-4          # Minimum eigenvalue for mass matrix
+
+
+# =============================================================================
+# Inertia of Belief Mass Matrix (Paper Eq. 20)
+# =============================================================================
+
+class InertiaOfBeliefMass(nn.Module):
+    """
+    Extended mass matrix from "The Inertia of Belief" paper.
+
+    M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+    where:
+        - Λ_{pi} = Σ_p⁻¹ = Prior precision
+        - Λ_{oi} = Observation precision (from sensory likelihood)
+        - Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T = Transported neighbor precision
+        - Ω_{ik} = e^{φ_i} e^{-φ_k} = Gauge transport operator
+        - β_{ij} = Attention weights (affinity/trust)
+
+    Physical interpretation:
+        - Prior precision: Resistance from prior expectations
+        - Observation precision: Grounding in sensory data
+        - Incoming social: Being pulled toward confident neighbors
+        - Outgoing recoil: Newton's 3rd law from influencing others
+
+    Note: The full mass matrix M_i is position-dependent (depends on Σ, β),
+    which means we need smaller dt for symplectic accuracy compared to
+    constant mass. The paper argues this is necessary for faithful dynamics.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        generators: torch.Tensor,  # (3, K, K) SO(3) generators
+        config: Optional[MassConfig] = None,
+    ):
+        """
+        Initialize mass matrix computation.
+
+        Args:
+            embed_dim: Latent dimension K
+            generators: SO(3) generators for gauge transport
+            config: MassConfig with toggles for each term
+        """
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.config = config or MassConfig()
+        self.register_buffer('generators', generators)
+
+    def compute_gauge_transport(
+        self,
+        phi_i: torch.Tensor,  # (B, N, 3) - source gauge field
+        phi_k: torch.Tensor,  # (B, N, 3) - target gauge field
+    ) -> torch.Tensor:
+        """
+        Compute gauge transport operator Ω_{ik} = e^{φ_i} e^{-φ_k}.
+
+        This transports quantities from agent k's frame to agent i's frame.
+
+        Args:
+            phi_i: Gauge field at source
+            phi_k: Gauge field at target
+
+        Returns:
+            Omega: (B, N, K, K) transport operator
+        """
+        K = self.embed_dim
+        B, N, _ = phi_i.shape
+        device = phi_i.device
+        dtype = phi_i.dtype
+
+        # φ in so(3): φ = φ_a T_a where T_a are generators
+        # e^φ = exp(φ_a T_a)
+
+        # Compute φ_i · T for each agent
+        # generators: (3, K, K), phi_i: (B, N, 3)
+        phi_i_matrix = torch.einsum('bnc,ckl->bnkl', phi_i, self.generators)  # (B, N, K, K)
+        phi_k_matrix = torch.einsum('bnc,ckl->bnkl', phi_k, self.generators)  # (B, N, K, K)
+
+        # Matrix exponential (stable via eigendecomposition for skew-symmetric)
+        # For small angles, use Rodrigues formula, but for general case use matrix_exp
+        exp_phi_i = torch.linalg.matrix_exp(phi_i_matrix)  # (B, N, K, K)
+        exp_neg_phi_k = torch.linalg.matrix_exp(-phi_k_matrix)  # (B, N, K, K)
+
+        # Ω_{ik} = e^{φ_i} e^{-φ_k}
+        Omega = exp_phi_i @ exp_neg_phi_k  # (B, N, K, K)
+
+        return Omega
+
+    def transport_precision(
+        self,
+        Lambda_k: torch.Tensor,  # (B, N, K, K) - precision at k
+        phi_i: torch.Tensor,     # (B, N, 3) - gauge at i
+        phi_k: torch.Tensor,     # (B, N, 3) - gauge at k
+    ) -> torch.Tensor:
+        """
+        Transport precision from agent k to agent i's frame.
+
+        Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T
+
+        Args:
+            Lambda_k: Precision at agent k
+            phi_i: Gauge field at agent i
+            phi_k: Gauge field at agent k
+
+        Returns:
+            Lambda_transported: (B, N, K, K) precision in i's frame
+        """
+        Omega = self.compute_gauge_transport(phi_i, phi_k)  # (B, N, K, K)
+
+        # Λ̃ = Ω Λ Ω^T
+        Lambda_transported = Omega @ Lambda_k @ Omega.transpose(-1, -2)
+
+        return Lambda_transported
+
+    def compute_mass(
+        self,
+        Sigma_prior: torch.Tensor,   # (B, N, K, K) - prior covariance
+        Sigma_q: torch.Tensor,       # (B, N, K, K) - posterior covariance
+        phi: torch.Tensor,           # (B, N, 3) - gauge field
+        beta: Optional[torch.Tensor] = None,  # (B, N, N) - attention weights
+        Sigma_obs: Optional[torch.Tensor] = None,  # (B, N, K, K) - observation covariance
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute the complete mass matrix M and its inverse M⁻¹.
+
+        M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+        Args:
+            Sigma_prior: Prior covariance (for Λ_p = Σ_p⁻¹)
+            Sigma_q: Posterior covariance (for Λ_q = Σ_q⁻¹)
+            phi: Gauge field for transport
+            beta: Attention weights (for social terms)
+            Sigma_obs: Observation covariance (for Λ_o = Σ_o⁻¹)
+
+        Returns:
+            M: (B, N, K, K) mass matrix
+            M_inv: (B, N, K, K) inverse mass matrix
+        """
+        B, N, K = Sigma_prior.shape[:3]
+        device = Sigma_prior.device
+        dtype = Sigma_prior.dtype
+        eps = self.config.eps
+
+        # Initialize mass as zero
+        M = torch.zeros(B, N, K, K, device=device, dtype=dtype)
+
+        # =====================================================================
+        # 1. Prior precision: Λ_p = Σ_p⁻¹
+        # =====================================================================
+        if self.config.use_prior_precision:
+            Sigma_p_reg = Sigma_prior + eps * torch.eye(K, device=device, dtype=dtype)
+            Lambda_p = torch.linalg.inv(Sigma_p_reg)  # (B, N, K, K)
+            M = M + Lambda_p
+
+        # =====================================================================
+        # 2. Observation precision: Λ_o = Σ_o⁻¹
+        # =====================================================================
+        if self.config.use_observation_precision and Sigma_obs is not None:
+            Sigma_o_reg = Sigma_obs + eps * torch.eye(K, device=device, dtype=dtype)
+            Lambda_o = torch.linalg.inv(Sigma_o_reg)  # (B, N, K, K)
+            M = M + Lambda_o
+
+        # =====================================================================
+        # 3. Incoming social precision: Σ_k β_{ik} Λ̃_{qk}
+        # "Being pulled toward confident neighbors"
+        # =====================================================================
+        if self.config.use_incoming_social and beta is not None:
+            # Compute posterior precision
+            Sigma_q_reg = Sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
+            Lambda_q = torch.linalg.inv(Sigma_q_reg)  # (B, N, K, K)
+
+            # For each agent i, sum over neighbors k
+            # Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T
+            # M_incoming = Σ_k β_{ik} Λ̃_{qk}
+
+            # Expand phi for broadcasting: phi_i[b,i] and phi_k[b,k]
+            phi_i = phi.unsqueeze(2)  # (B, N, 1, 3)
+            phi_k = phi.unsqueeze(1)  # (B, 1, N, 3)
+
+            # Compute transport for all pairs (vectorized)
+            # phi_i_expanded: (B, N, N, 3), phi_k_expanded: (B, N, N, 3)
+            phi_i_expanded = phi_i.expand(-1, -1, N, -1).reshape(B * N * N, 3)
+            phi_k_expanded = phi_k.expand(-1, N, -1, -1).reshape(B * N * N, 3)
+
+            # Compute Ω_{ik} for all pairs
+            phi_diff_matrix = torch.einsum('bc,ckl->bkl',
+                phi_i_expanded, self.generators.unsqueeze(0).expand(B*N*N, -1, -1, -1).reshape(B*N*N, 3, K, K).sum(dim=1))
+
+            # Simpler approach: compute per-agent mass using loop (cleaner, still efficient)
+            M_incoming = torch.zeros(B, N, K, K, device=device, dtype=dtype)
+            for k in range(N):
+                # Get phi for all i and this k
+                phi_all_i = phi  # (B, N, 3)
+                phi_this_k = phi[:, k:k+1, :].expand(-1, N, -1)  # (B, N, 3)
+
+                # Transport Lambda_q[k] to each agent i's frame
+                Lambda_k = Lambda_q[:, k:k+1, :, :].expand(-1, N, -1, -1)  # (B, N, K, K)
+                Lambda_transported = self.transport_precision(Lambda_k, phi_all_i, phi_this_k)
+
+                # Weight by attention β_{ik}
+                beta_ik = beta[:, :, k:k+1, None]  # (B, N, 1, 1)
+                M_incoming = M_incoming + beta_ik * Lambda_transported
+
+            M = M + M_incoming
+
+        # =====================================================================
+        # 4. Outgoing recoil precision: Σ_j β_{ji} Λ_{qi}
+        # "Newton's 3rd law from influencing others"
+        # =====================================================================
+        if self.config.use_outgoing_recoil and beta is not None:
+            # Compute posterior precision
+            Sigma_q_reg = Sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
+            Lambda_q = torch.linalg.inv(Sigma_q_reg)  # (B, N, K, K)
+
+            # For each agent i, sum over agents j that observe i
+            # M_outgoing = Σ_j β_{ji} Λ_{qi}
+            # Note: β_{ji} is how much j attends to i (i is the key)
+
+            # Sum over j: Σ_j β_{ji} = (sum over row j of beta for column i)
+            beta_sum = beta.sum(dim=1)  # (B, N) - sum of attention TO agent i
+
+            # Multiply by own precision
+            M_outgoing = beta_sum.unsqueeze(-1).unsqueeze(-1) * Lambda_q  # (B, N, K, K)
+
+            M = M + M_outgoing
+
+        # =====================================================================
+        # Ensure mass is SPD (positive definite)
+        # =====================================================================
+        # If no terms are enabled, use identity mass
+        if not (self.config.use_prior_precision or
+                self.config.use_observation_precision or
+                self.config.use_incoming_social or
+                self.config.use_outgoing_recoil):
+            M = torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1).clone()
+
+        # Symmetrize and regularize
+        M = 0.5 * (M + M.transpose(-1, -2))
+
+        # Ensure minimum eigenvalue for stability
+        eigenvalues, eigenvectors = torch.linalg.eigh(M)
+        eigenvalues = torch.clamp(eigenvalues, min=self.config.min_eigenvalue)
+        M = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
+
+        # Compute inverse
+        M_inv = eigenvectors @ torch.diag_embed(1.0 / eigenvalues) @ eigenvectors.transpose(-1, -2)
+
+        return M, M_inv
 
 
 # =============================================================================
@@ -320,9 +601,18 @@ class HamiltonianKineticTerms(nn.Module):
     T = T_μ + T_Σ + T_φ
 
     Each term uses the correct geometric structure:
-    - T_μ: Fisher-Rao metric (mass matrix = Σ_p)
+    - T_μ: Fisher-Rao metric with extended mass from Inertia of Belief paper
     - T_Σ: Affine-invariant SPD metric
     - T_φ: Killing form on so(3)
+
+    EXTENDED MASS (from "The Inertia of Belief"):
+    -----------------------------------------------
+    The kinetic energy T_μ = (1/2) π_μᵀ M⁻¹ π_μ now uses the full mass:
+
+        M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+    When only prior precision is used (default), this reduces to the
+    original formulation with M = Σ_p⁻¹, M⁻¹ = Σ_p.
     """
 
     def __init__(self, embed_dim: int, eps: float = 1e-8):
@@ -333,25 +623,25 @@ class HamiltonianKineticTerms(nn.Module):
     def kinetic_mu(
         self,
         pi_mu: torch.Tensor,
-        Sigma_prior: torch.Tensor
+        M_inv: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Mean kinetic energy: T_μ = (1/2) π_μᵀ Σ_p π_μ
+        Mean kinetic energy: T_μ = (1/2) π_μᵀ M⁻¹ π_μ
 
-        From: π_μ = Σ_p⁻¹ μ̇, so μ̇ = Σ_p π_μ
-        Therefore: T_μ = (1/2) μ̇ᵀ Σ_p⁻¹ μ̇ = (1/2) π_μᵀ Σ_p π_μ
+        Uses the extended mass matrix from "The Inertia of Belief" paper.
+        When only prior precision is used, M⁻¹ = Σ_p (original formulation).
 
         Args:
             pi_mu: (B, N, K) momentum
-            Sigma_prior: (B, N, K, K) prior covariance (mass matrix)
+            M_inv: (B, N, K, K) inverse mass matrix
 
         Returns:
             T_mu: (B, N) kinetic energy per agent
         """
-        # T_μ = (1/2) π_μᵀ Σ_p π_μ
+        # T_μ = (1/2) π_μᵀ M⁻¹ π_μ
         # Use einsum: (...,i), (...,i,j), (...,j) -> (...)
-        Sigma_pi = torch.einsum('...ij,...j->...i', Sigma_prior, pi_mu)
-        T_mu = 0.5 * torch.einsum('...i,...i->...', pi_mu, Sigma_pi)
+        M_inv_pi = torch.einsum('...ij,...j->...i', M_inv, pi_mu)
+        T_mu = 0.5 * torch.einsum('...i,...i->...', pi_mu, M_inv_pi)
         return T_mu
 
     def kinetic_Sigma(
@@ -403,7 +693,7 @@ class HamiltonianKineticTerms(nn.Module):
     def total_kinetic(
         self,
         state: PhaseSpaceState,
-        Sigma_prior: torch.Tensor,
+        M_inv: torch.Tensor,
         chi: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
@@ -411,13 +701,13 @@ class HamiltonianKineticTerms(nn.Module):
 
         Args:
             state: Phase space state
-            Sigma_prior: Prior covariance (mass matrix for μ)
+            M_inv: (B, N, K, K) inverse mass matrix (from InertiaOfBeliefMass or Σ_p)
             chi: (B, N) support weights (default: ones)
 
         Returns:
             T: (B,) total kinetic energy per batch
         """
-        T_mu = self.kinetic_mu(state.pi_mu, Sigma_prior)
+        T_mu = self.kinetic_mu(state.pi_mu, M_inv)
         T_Sigma = self.kinetic_Sigma(state.Sigma, state.pi_Sigma)
         T_phi = self.kinetic_phi(state.pi_phi)
 
@@ -701,7 +991,7 @@ class LeapfrogIntegrator(nn.Module):
         p = (π_μ, π_Σ, π_φ)
 
     Position updates use the correct geometric structure:
-        μ̇ = Σ_p π_μ          (Fisher metric)
+        μ̇ = M⁻¹ π_μ          (Extended mass from Inertia of Belief paper)
         Σ̇ = 2 Σ π_Σ Σ        (SPD manifold)
         φ̇ = π_φ              (Lie algebra)
     """
@@ -726,19 +1016,19 @@ class LeapfrogIntegrator(nn.Module):
     def position_step(
         self,
         state: PhaseSpaceState,
-        Sigma_prior: torch.Tensor,
+        M_inv: torch.Tensor,
         dt: float
     ) -> PhaseSpaceState:
         """
         Full position step: q ← q + dt · ∂T/∂p
 
         Uses correct geometric update rules:
-            μ ← μ + dt · Σ_p π_μ
+            μ ← μ + dt · M⁻¹ π_μ  (Extended mass from Inertia of Belief)
             Σ ← exp_Σ(dt · 2 Σ π_Σ Σ)  (geodesic on SPD)
             φ ← φ + dt · π_φ
         """
-        # Mean update: μ ← μ + dt · Σ_p π_μ
-        mu_new = state.mu + dt * torch.einsum('...ij,...j->...i', Sigma_prior, state.pi_mu)
+        # Mean update: μ ← μ + dt · M⁻¹ π_μ
+        mu_new = state.mu + dt * torch.einsum('...ij,...j->...i', M_inv, state.pi_mu)
 
         # Covariance update on SPD manifold
         if self.update_Sigma:
@@ -861,6 +1151,7 @@ class LeapfrogIntegrator(nn.Module):
         state: PhaseSpaceState,
         mu_prior: torch.Tensor,
         Sigma_prior: torch.Tensor,
+        M_inv: torch.Tensor,
         beta: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         W_out: Optional[torch.Tensor] = None,
@@ -871,14 +1162,23 @@ class LeapfrogIntegrator(nn.Module):
         p_{1/2} = p_0 - (ε/2) ∂V/∂q(q_0)
         q_1 = q_0 + ε ∂T/∂p(p_{1/2})
         p_1 = p_{1/2} - (ε/2) ∂V/∂q(q_1)
+
+        Args:
+            state: Current phase space state
+            mu_prior: Prior means
+            Sigma_prior: Prior covariances
+            M_inv: Inverse mass matrix from Inertia of Belief paper
+            beta: Attention weights
+            targets: Target tokens
+            W_out: Output projection
         """
         # Half-step momentum
         state = self.momentum_step(
             state, mu_prior, Sigma_prior, beta, targets, W_out, self.dt / 2
         )
 
-        # Full-step position
-        state = self.position_step(state, Sigma_prior, self.dt)
+        # Full-step position (uses M_inv for μ update)
+        state = self.position_step(state, M_inv, self.dt)
 
         # Half-step momentum
         state = self.momentum_step(
@@ -892,15 +1192,25 @@ class LeapfrogIntegrator(nn.Module):
         state: PhaseSpaceState,
         mu_prior: torch.Tensor,
         Sigma_prior: torch.Tensor,
+        M_inv: torch.Tensor,
         beta: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         W_out: Optional[torch.Tensor] = None,
     ) -> PhaseSpaceState:
         """
         Multiple leapfrog steps.
+
+        Args:
+            state: Initial phase space state
+            mu_prior: Prior means
+            Sigma_prior: Prior covariances
+            M_inv: Inverse mass matrix from Inertia of Belief paper
+            beta: Attention weights
+            targets: Target tokens
+            W_out: Output projection
         """
         for _ in range(self.n_steps):
-            state = self.step(state, mu_prior, Sigma_prior, beta, targets, W_out)
+            state = self.step(state, mu_prior, Sigma_prior, M_inv, beta, targets, W_out)
         return state
 
 
@@ -919,6 +1229,17 @@ class HamiltonianFFN(nn.Module):
     approximately conserving the Hamiltonian H = T + V.
 
     Key innovation: Energy conservation prevents vanishing gradients!
+
+    EXTENDED MASS FROM "THE INERTIA OF BELIEF" (Paper Eq. 20):
+    -----------------------------------------------------------
+    The mass matrix M can include multiple terms:
+        M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+
+    Each term can be toggled via MassConfig:
+        - use_prior_precision: Λ_p (default: True)
+        - use_observation_precision: Λ_o (default: False)
+        - use_incoming_social: Σβ_{ik}Λ̃_{qk} (default: False)
+        - use_outgoing_recoil: Σβ_{ji}Λ_{qi} (default: False)
 
     Architecture:
         Input: (μ, Σ, φ) from attention layer
@@ -946,7 +1267,8 @@ class HamiltonianFFN(nn.Module):
         update_phi: bool = False,
         # Momentum initialization
         momentum_scale: float = 1.0,
-        mass_matrix: Literal['fisher', 'identity'] = 'fisher',
+        # Extended mass configuration (from Inertia of Belief paper)
+        mass_config: Optional[MassConfig] = None,
         # Thermostat (optional damping)
         gamma: float = 0.0,          # Damping coefficient (0 = pure Hamiltonian)
         temperature: float = 1.0,     # For Langevin dynamics
@@ -966,7 +1288,8 @@ class HamiltonianFFN(nn.Module):
             update_Sigma: Whether to evolve covariances
             update_phi: Whether to evolve gauge field
             momentum_scale: Scale for initial momentum sampling
-            mass_matrix: 'fisher' uses Σ_p, 'identity' uses I
+            mass_config: MassConfig with toggles for each mass term from paper
+                        If None, defaults to prior precision only (original behavior)
             gamma: Damping coefficient (>0 adds friction)
             temperature: Thermal energy scale
             eps: Numerical stability
@@ -978,7 +1301,7 @@ class HamiltonianFFN(nn.Module):
         self.update_Sigma = update_Sigma
         self.update_phi = update_phi
         self.momentum_scale = momentum_scale
-        self.mass_matrix = mass_matrix
+        self.mass_config = mass_config or MassConfig()  # Default: prior precision only
         self.gamma = gamma
         self.temperature = temperature
         self.eps = eps
@@ -990,6 +1313,13 @@ class HamiltonianFFN(nn.Module):
         self.kinetic = HamiltonianKineticTerms(embed_dim, eps)
         self.potential = HamiltonianPotential(
             embed_dim, generators, alpha, lambda_belief, kappa, eps
+        )
+
+        # Extended mass matrix computation (from Inertia of Belief paper)
+        self.mass_computer = InertiaOfBeliefMass(
+            embed_dim=embed_dim,
+            generators=generators,
+            config=self.mass_config,
         )
 
         # Symplectic integrator
@@ -1010,7 +1340,8 @@ class HamiltonianFFN(nn.Module):
         mu: torch.Tensor,
         Sigma: torch.Tensor,
         phi: torch.Tensor,
-        Sigma_prior: torch.Tensor
+        M: torch.Tensor,
+        M_inv: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Sample initial momenta from thermal distribution.
@@ -1018,33 +1349,35 @@ class HamiltonianFFN(nn.Module):
         For Hamiltonian dynamics with mass matrix M:
             π ~ N(0, M)
 
-        For μ with Fisher mass matrix Σ_p:
-            π_μ ~ N(0, Σ_p⁻¹)
+        For μ with extended mass M from Inertia of Belief paper:
+            π_μ ~ N(0, M) = M^{1/2} N(0, I)
 
         For Σ (SPD manifold):
             π_Σ ~ symmetric, ~ Σ⁻¹/² · N(0, I) · Σ⁻¹/²
 
         For φ (Lie algebra):
             π_φ ~ N(0, I)
+
+        Args:
+            mu: (B, N, K) belief means
+            Sigma: (B, N, K, K) belief covariances
+            phi: (B, N, 3) gauge field
+            M: (B, N, K, K) mass matrix
+            M_inv: (B, N, K, K) inverse mass matrix
         """
         B, N, K = mu.shape
         device = mu.device
         dtype = mu.dtype
 
-        # Sample π_μ
-        if self.mass_matrix == 'fisher':
-            # Sample from N(0, Σ_p⁻¹) = Σ_p^{-1/2} N(0, I)
-            # First compute Σ_p^{-1/2}
-            Sigma_prior_reg = Sigma_prior + self.eps * torch.eye(K, device=device, dtype=dtype)
-            eigenvalues, eigenvectors = torch.linalg.eigh(Sigma_prior_reg)
-            eigenvalues = torch.clamp(eigenvalues, min=self.eps)
-            Sigma_prior_inv_sqrt = eigenvectors @ torch.diag_embed(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
+        # Sample π_μ from N(0, M)
+        # π_μ = M^{1/2} · z where z ~ N(0, I)
+        # Compute M^{1/2} via eigendecomposition
+        eigenvalues, eigenvectors = torch.linalg.eigh(M)
+        eigenvalues = torch.clamp(eigenvalues, min=self.eps)
+        M_sqrt = eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
 
-            noise_mu = torch.randn(B, N, K, device=device, dtype=dtype)
-            pi_mu = self.momentum_scale * torch.einsum('...ij,...j->...i', Sigma_prior_inv_sqrt, noise_mu)
-        else:
-            # Simple identity mass
-            pi_mu = self.momentum_scale * torch.randn(B, N, K, device=device, dtype=dtype)
+        noise_mu = torch.randn(B, N, K, device=device, dtype=dtype)
+        pi_mu = self.momentum_scale * torch.einsum('...ij,...j->...i', M_sqrt, noise_mu)
 
         # Sample π_Σ (symmetric matrix on SPD tangent space)
         if self.update_Sigma:
@@ -1071,9 +1404,13 @@ class HamiltonianFFN(nn.Module):
         beta: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         W_out: Optional[torch.Tensor] = None,
+        Sigma_obs: Optional[torch.Tensor] = None,  # For observation precision term
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
         Forward pass: Hamiltonian dynamics on belief space.
+
+        Uses extended mass matrix from "The Inertia of Belief" paper:
+            M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
 
         Args:
             mu: (B, N, K) belief means
@@ -1084,12 +1421,13 @@ class HamiltonianFFN(nn.Module):
             beta: (B, N, N) attention weights from attention layer
             targets: (B, N) target tokens (for CE term in E-step)
             W_out: (V, K) output projection
+            Sigma_obs: (B, N, K, K) observation covariance (optional)
 
         Returns:
             mu_new: (B, N, K) updated means
             Sigma_new: (B, N, K, K) updated covariances
             phi_new: (B, N, 3) updated gauge field
-            diagnostics: dict with energy terms, conservation, etc.
+            diagnostics: dict with energy terms, conservation, mass info, etc.
         """
         # Hamiltonian dynamics uses autograd.grad() internally for leapfrog.
         # To prevent "backward through graph twice" errors:
@@ -1104,6 +1442,7 @@ class HamiltonianFFN(nn.Module):
         mu_prior_dyn = mu_prior.detach()
         Sigma_prior_dyn = Sigma_prior.detach()
         beta_dyn = beta.detach() if beta is not None else None
+        Sigma_obs_dyn = Sigma_obs.detach() if Sigma_obs is not None else None
 
         # Use enable_grad() to ensure autograd.grad() works even when called
         # from validation (which uses torch.no_grad() context)
@@ -1113,8 +1452,21 @@ class HamiltonianFFN(nn.Module):
             Sigma_dyn.requires_grad_(True)
             phi_dyn.requires_grad_(True)
 
-            # Sample initial momenta
-            pi_mu, pi_Sigma, pi_phi = self.sample_momenta(mu_dyn, Sigma_dyn, phi_dyn, Sigma_prior_dyn)
+            # =================================================================
+            # Compute Extended Mass Matrix (from Inertia of Belief paper)
+            # =================================================================
+            M, M_inv = self.mass_computer.compute_mass(
+                Sigma_prior=Sigma_prior_dyn,
+                Sigma_q=Sigma_dyn,
+                phi=phi_dyn,
+                beta=beta_dyn,
+                Sigma_obs=Sigma_obs_dyn,
+            )
+
+            # Sample initial momenta using extended mass
+            pi_mu, pi_Sigma, pi_phi = self.sample_momenta(
+                mu_dyn, Sigma_dyn, phi_dyn, M, M_inv
+            )
 
             # Create initial phase space state
             state = PhaseSpaceState(
@@ -1126,8 +1478,8 @@ class HamiltonianFFN(nn.Module):
                 pi_phi=pi_phi,
             )
 
-            # Compute initial Hamiltonian
-            T_init = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
+            # Compute initial Hamiltonian (using M_inv for kinetic energy)
+            T_init = self.kinetic.total_kinetic(state, M_inv)
             V_init, V_breakdown = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
             H_init = T_init + V_init
 
@@ -1139,18 +1491,28 @@ class HamiltonianFFN(nn.Module):
                 if self.update_phi:
                     state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
 
-            # Symplectic integration
+            # Symplectic integration (using M_inv for position updates)
             state = self.integrator.integrate(
-                state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out
+                state, mu_prior_dyn, Sigma_prior_dyn, M_inv, beta_dyn, targets, W_out
             )
 
             # Compute final Hamiltonian
-            T_final = self.kinetic.total_kinetic(state, Sigma_prior_dyn)
+            # Note: For position-dependent mass, we should recompute M at final position
+            # For simplicity and symplecticity, we use the initial M
+            T_final = self.kinetic.total_kinetic(state, M_inv)
             V_final, _ = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
             H_final = T_final + V_final
 
             # Energy conservation diagnostic
             delta_H = (H_final - H_init).abs().mean()
+
+            # Mass configuration info for diagnostics
+            mass_info = {
+                'mass_use_prior': self.mass_config.use_prior_precision,
+                'mass_use_observation': self.mass_config.use_observation_precision,
+                'mass_use_incoming_social': self.mass_config.use_incoming_social,
+                'mass_use_outgoing_recoil': self.mass_config.use_outgoing_recoil,
+            }
 
             diagnostics = {
                 'H_init': H_init.mean().item(),
@@ -1161,17 +1523,30 @@ class HamiltonianFFN(nn.Module):
                 'V_init': V_init.mean().item(),
                 'V_final': V_final.mean().item(),
                 **{k: v.mean().item() for k, v in V_breakdown.items()},
+                **mass_info,
             }
 
         # Detach outputs - gradients flow through loss, not through dynamics
         return state.mu.detach(), state.Sigma.detach(), state.phi.detach(), diagnostics
 
     def extra_repr(self) -> str:
+        mass_terms = []
+        if self.mass_config.use_prior_precision:
+            mass_terms.append("Λ_p")
+        if self.mass_config.use_observation_precision:
+            mass_terms.append("Λ_o")
+        if self.mass_config.use_incoming_social:
+            mass_terms.append("Σβ_ik·Λ̃_qk")
+        if self.mass_config.use_outgoing_recoil:
+            mass_terms.append("Σβ_ji·Λ_qi")
+        mass_str = "+".join(mass_terms) if mass_terms else "identity"
+
         return (
             f"embed_dim={self.embed_dim}, "
             f"n_steps={self.n_leapfrog_steps}, "
             f"dt={self.dt:.4f}, "
             f"gamma={self.gamma:.4f}, "
+            f"mass=[{mass_str}], "
             f"update_Sigma={self.update_Sigma}, "
             f"update_phi={self.update_phi}"
         )
