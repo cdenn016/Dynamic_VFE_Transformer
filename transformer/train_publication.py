@@ -2,7 +2,7 @@
 Publication Proof-of-Principle Training Script
 ===============================================
 
-Character-level language modeling on WikiText-2 for minimal publishable claim.
+Language modeling on WikiText-2 with BPE tokenization for minimal publishable claim.
 
 Demonstrates:
 1. Variational FFN works - inference comparable to learned MLP
@@ -58,7 +58,7 @@ from typing import Dict, List, Tuple
 
 
 from transformer.model import GaugeTransformerLM
-from transformer.data import create_char_dataloaders
+from transformer.data import create_dataloaders, create_char_dataloaders
 from transformer.train import compute_free_energy_loss
 from transformer.train_fast import FastTrainer, FastTrainingConfig
 
@@ -75,8 +75,8 @@ DEFAULT_ENABLE_SIGMA_PHI = True   # Set True to enable learning Σ and φ (requi
 
 PUBLICATION_CONFIG = {
     # Model architecture (minimal but meaningful)
-    'vocab_size': 512,        # Will be set by actual char vocab (typically ~100 chars in WikiText-2)
-    'embed_dim': 21,          # K=11 (ODD - required for SO(3) irreps!)
+    'vocab_size': 512,        # BPE vocab size (restricted to top K tokens). Set 200-512 for small experiments.
+    'embed_dim': 21,          # K=21 (ODD - required for SO(3) irreps!)
     'n_layers': 3,            # Depth for non-trivial learning
     'hidden_dim': 84,         # 4×embed_dim
     'max_seq_len': 32,        # N=32 (key: enough for patterns!)
@@ -482,17 +482,17 @@ def run_single_experiment(
     config['ffn_mode'] = ffn_mode
 
     # =================================================================
-    # Data Loading
+    # Data Loading (BPE tokenization for configurable vocab size)
     # =================================================================
 
     print("\n" + "="*70)
-    print("LOADING CHARACTER-LEVEL DATA")
+    print("LOADING WIKITEXT-2 WITH BPE TOKENIZATION")
     print("="*70)
 
-    train_loader, val_loader, actual_vocab_size = create_char_dataloaders(
+    train_loader, val_loader, actual_vocab_size = create_dataloaders(
         max_seq_len=config['max_seq_len'],
         batch_size=config['batch_size'],
-        vocab_size=256,  # ASCII extended
+        vocab_size=config['vocab_size'],  # Use config vocab size (e.g., 200, 512)
         num_workers=0,
     )
 
@@ -509,7 +509,7 @@ def run_single_experiment(
     print(f"  N (seq len): {config['max_seq_len']}")
     print(f"  K (embed): {config['embed_dim']}")
     print(f"  Layers: {config['n_layers']}")
-    print(f"  Vocab: {actual_vocab_size} chars")
+    print(f"  Vocab: {actual_vocab_size} tokens (BPE)")
 
     model = GaugeTransformerLM(config)
     model = model.to(device)
