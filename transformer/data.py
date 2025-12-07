@@ -52,9 +52,14 @@ except Exception as e:
 try:
     from transformers import AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     TRANSFORMERS_AVAILABLE = False
     AutoTokenizer = None
+    print(f"[DEBUG] transformers import failed: {e}")
+except Exception as e:
+    TRANSFORMERS_AVAILABLE = False
+    AutoTokenizer = None
+    print(f"[DEBUG] transformers import error: {type(e).__name__}: {e}")
 
 # Legacy compatibility
 HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
@@ -501,6 +506,200 @@ class WikiText2CharDataset(Dataset):
             ])
 
         return input_ids, target_ids
+
+
+class WikiText2ByteDataset(Dataset):
+    """
+    Byte-level WikiText-2 dataset for language modeling.
+
+    Encodes text as raw bytes (0-255), giving a fixed vocabulary of 256.
+    No external tokenizer required - pure Python!
+
+    Features:
+        - Byte-level modeling (vocab_size = 256, always)
+        - Fixed sequence length
+        - No external dependencies
+        - Can restrict to top K bytes if desired
+    """
+
+    def __init__(
+        self,
+        split: str = 'train',
+        max_seq_len: int = 32,
+        vocab_size: int = 256,
+        cache_dir: Optional[str] = None,
+    ):
+        """
+        Initialize byte-level WikiText-2 dataset.
+
+        Args:
+            split: 'train', 'validation', or 'test'
+            max_seq_len: Maximum sequence length (N)
+            vocab_size: Maximum vocabulary size (up to 256)
+            cache_dir: Optional cache directory for dataset
+        """
+        self.split = split
+        self.max_seq_len = max_seq_len
+        self.vocab_size = min(vocab_size, 256)  # Cap at 256 bytes
+
+        # Load dataset with fallback
+        print(f"Loading WikiText-2 ({split}) for byte-level modeling...")
+
+        if DATASETS_AVAILABLE:
+            dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
+            texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
+            full_text = '\n\n'.join(texts)
+        else:
+            print("  (Using direct download fallback)")
+            wikitext_data = _download_wikitext2_fallback(cache_dir)
+            full_text = wikitext_data[split]
+
+        print(f"  Total characters: {len(full_text):,}")
+
+        # Encode as bytes
+        text_bytes = full_text.encode('utf-8', errors='replace')
+
+        # PAD = 0, so shift all bytes by 1, and use 0 for padding
+        # Vocab: 0=PAD, 1-256=bytes (so actual byte value + 1)
+        self.pad_token_id = 0
+
+        # If restricting vocab, find most frequent bytes and remap
+        if self.vocab_size < 256:
+            # Count byte frequencies
+            byte_counts = {}
+            for b in text_bytes:
+                byte_counts[b] = byte_counts.get(b, 0) + 1
+
+            # Get top (vocab_size - 1) bytes (reserve 0 for PAD)
+            sorted_bytes = sorted(byte_counts.items(), key=lambda x: x[1], reverse=True)
+            top_bytes = [b for b, _ in sorted_bytes[:self.vocab_size - 1]]
+
+            # Build mapping: byte -> token_id (1 to vocab_size-1), unknown -> vocab_size-1
+            self.byte_to_id = {b: i + 1 for i, b in enumerate(top_bytes)}
+            self.unk_id = self.vocab_size  # Last position for unknown
+            self._actual_vocab_size = self.vocab_size
+
+            # Convert bytes to token IDs
+            byte_indices = []
+            for b in text_bytes:
+                if b in self.byte_to_id:
+                    byte_indices.append(self.byte_to_id[b])
+                else:
+                    byte_indices.append(self.unk_id)
+        else:
+            # Full 256 bytes: token_id = byte_value + 1 (0 reserved for PAD)
+            self._actual_vocab_size = 257  # 0=PAD, 1-256=bytes
+            byte_indices = [b + 1 for b in text_bytes]
+
+        self.tokens = torch.tensor(byte_indices, dtype=torch.long)
+
+        # Calculate number of complete sequences
+        self.num_sequences = max(1, len(self.tokens) - self.max_seq_len)
+
+        print(f"  Byte vocab size: {self._actual_vocab_size}")
+        print(f"  Number of sequences: {self.num_sequences:,}")
+        print(f"  Total bytes: {len(self.tokens):,}")
+
+    def get_vocab_size(self) -> int:
+        """Return actual vocabulary size."""
+        return self._actual_vocab_size
+
+    def __len__(self) -> int:
+        return self.num_sequences
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        start_idx = idx
+        end_idx = start_idx + self.max_seq_len
+
+        input_ids = self.tokens[start_idx:end_idx]
+        target_ids = self.tokens[start_idx + 1:end_idx + 1]
+
+        # Pad if necessary
+        if len(input_ids) < self.max_seq_len:
+            padding_length = self.max_seq_len - len(input_ids)
+            input_ids = torch.cat([
+                input_ids,
+                torch.full((padding_length,), self.pad_token_id, dtype=torch.long)
+            ])
+            target_ids = torch.cat([
+                target_ids,
+                torch.full((padding_length,), self.pad_token_id, dtype=torch.long)
+            ])
+
+        return input_ids, target_ids
+
+
+def create_byte_dataloaders(
+    max_seq_len: int = 32,
+    batch_size: int = 16,
+    vocab_size: int = 256,
+    num_workers: int = 0,
+    cache_dir: Optional[str] = None,
+) -> Tuple[DataLoader, DataLoader, int]:
+    """
+    Create byte-level dataloaders. NO EXTERNAL PACKAGES REQUIRED!
+
+    This is the simplest option that gives you a configurable vocab size
+    without needing transformers or datasets packages.
+
+    Args:
+        max_seq_len: Maximum sequence length
+        batch_size: Batch size
+        vocab_size: Max vocab size (up to 256 for full byte range)
+        num_workers: Number of data loading workers
+        cache_dir: Optional cache directory
+
+    Returns:
+        train_loader, val_loader, actual_vocab_size
+    """
+    print("="*70)
+    print("CREATING BYTE-LEVEL WIKITEXT-2 DATALOADERS")
+    print("="*70)
+    print("(No external tokenizer required - pure byte encoding)")
+
+    train_dataset = WikiText2ByteDataset(
+        split='train',
+        max_seq_len=max_seq_len,
+        vocab_size=vocab_size,
+        cache_dir=cache_dir,
+    )
+
+    val_dataset = WikiText2ByteDataset(
+        split='validation',
+        max_seq_len=max_seq_len,
+        vocab_size=vocab_size,
+        cache_dir=cache_dir,
+    )
+
+    actual_vocab_size = train_dataset.get_vocab_size()
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        drop_last=True,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        drop_last=False,
+    )
+
+    print(f"\n{'='*70}")
+    print(f"DATALOADERS CREATED")
+    print(f"{'='*70}")
+    print(f"Train batches: {len(train_loader):,}")
+    print(f"Val batches:   {len(val_loader):,}")
+    print(f"Vocabulary:    {actual_vocab_size} bytes")
+    print(f"{'='*70}\n")
+
+    return train_loader, val_loader, actual_vocab_size
 
 
 def create_char_dataloaders(
