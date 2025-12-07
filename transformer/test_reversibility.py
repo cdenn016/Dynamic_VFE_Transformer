@@ -53,7 +53,10 @@ def test_reversibility(
 
     # Create SO(3) generators
     from transformer.attention import generate_so3_generators
-    generators = generate_so3_generators(embed_dim).to(device)
+    generators = generate_so3_generators(embed_dim)
+    if isinstance(generators, np.ndarray):
+        generators = torch.from_numpy(generators).float()
+    generators = generators.to(device)
 
     # Create integrator components
     kinetic = HamiltonianKineticTerms(
@@ -260,7 +263,10 @@ def test_token_attribution(
 
     # Create components
     from transformer.attention import generate_so3_generators
-    generators = generate_so3_generators(embed_dim).to(device)
+    generators = generate_so3_generators(embed_dim)
+    if isinstance(generators, np.ndarray):
+        generators = torch.from_numpy(generators).float()
+    generators = generators.to(device)
 
     kinetic = HamiltonianKineticTerms(
         embed_dim=embed_dim,
