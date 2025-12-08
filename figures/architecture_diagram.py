@@ -234,95 +234,120 @@ def create_manifold_diagram(ax):
             color=COLORS['manifold'], style='italic')
 
     # Prior point (left side)
-    prior_x, prior_y = 2, 2.6
+    prior_x, prior_y = 2.0, 2.6
     ax.plot(prior_x, prior_y, 'o', color=COLORS['embedding'], markersize=14, zorder=5)
-    ax.text(prior_x, prior_y - 0.6, r'Prior $p$', ha='center', fontsize=9,
+    ax.text(prior_x, prior_y + 0.5, r'Prior $p$', ha='center', va='center', fontsize=9,
             fontweight='bold', color=COLORS['embedding'])
-    ax.text(prior_x, prior_y + 0.5, r'$(\mu_p, \Sigma_p)$', ha='center', fontsize=8, color=COLORS['math'])
 
-    # Posterior point (VFE) - middle
-    post_vfe_x, post_vfe_y = 6, 2.8
-    ax.plot(post_vfe_x, post_vfe_y, 's', color=COLORS['ffn_vfe'], markersize=12, zorder=5)
-    ax.text(post_vfe_x, post_vfe_y - 0.6, r'$q$ (VFE)', ha='center', fontsize=9,
-            fontweight='bold', color=COLORS['ffn_vfe'])
+    # Optimal posterior point (SAME endpoint for all methods)
+    post_x, post_y = 9.5, 2.6
+    ax.plot(post_x, post_y, '*', color='black', markersize=18, zorder=6)
+    ax.text(post_x + 0.7, post_y, r'$q^*$', ha='left', va='center', fontsize=11,
+            fontweight='bold', color='black')
 
-    # Posterior point (Hamiltonian) - right
-    post_ham_x, post_ham_y = 9.5, 2.4
-    ax.plot(post_ham_x, post_ham_y, '^', color='#AA8800', markersize=13, zorder=5)
-    ax.text(post_ham_x, post_ham_y - 0.6, r'$q$ (Ham)', ha='center', fontsize=9,
-            fontweight='bold', color='#AA8800')
-
-    # VFE gradient descent path (dashed, direct)
-    t_vfe = np.linspace(0, 1, 30)
-    x_vfe = prior_x + (post_vfe_x - prior_x) * t_vfe
-    y_vfe = prior_y + (post_vfe_y - prior_y) * t_vfe + 0.3 * np.sin(2 * np.pi * t_vfe)
+    # === 1. VFE: Overdamped (direct descent, no overshoot) ===
+    t_vfe = np.linspace(0, 1, 40)
+    x_vfe = prior_x + (post_x - prior_x) * t_vfe
+    y_vfe = np.full_like(x_vfe, prior_y + 0.6)  # Offset up
     ax.plot(x_vfe, y_vfe, '--', color=COLORS['ffn_vfe'], linewidth=2.5, zorder=4)
-    ax.annotate('', xy=(post_vfe_x - 0.15, post_vfe_y + 0.02),
+    ax.annotate('', xy=(post_x - 0.15, prior_y + 0.6),
                 xytext=(x_vfe[-3], y_vfe[-3]),
                 arrowprops=dict(arrowstyle='->', color=COLORS['ffn_vfe'], lw=2.5))
+    ax.text(6, prior_y + 0.9, r'overdamped ($\gamma \gg 1$)', fontsize=8,
+            color=COLORS['ffn_vfe'], ha='center', style='italic')
 
-    # Hamiltonian orbit path (solid, oscillatory - energy conserving)
-    t_ham = np.linspace(0, 1, 80)
-    x_ham = prior_x + (post_ham_x - prior_x) * t_ham
-    # Oscillatory path showing energy conservation
-    y_ham = prior_y + (post_ham_y - prior_y) * t_ham + 0.6 * np.sin(5 * np.pi * t_ham) * np.exp(-1.5 * t_ham)
-    ax.plot(x_ham, y_ham, '-', color='#AA8800', linewidth=2.5, zorder=4)
-    ax.annotate('', xy=(post_ham_x - 0.15, post_ham_y + 0.05),
-                xytext=(x_ham[-3], y_ham[-3]),
-                arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2.5))
+    # === 2. Hamiltonian: Spiral (slightly damped, γ ~ 1) - spirals INTO q* ===
+    # Phase 1: Approach q*
+    t_approach = np.linspace(0, 1, 40)
+    x_approach = prior_x + (post_x - prior_x - 0.6) * t_approach
+    y_approach = prior_y + 0.15 * np.sin(1.5 * np.pi * t_approach)
 
-    # Add gradient annotation for VFE
-    ax.annotate(r'$-\nabla F$', xy=(4, 2.9), fontsize=9, color=COLORS['ffn_vfe'],
-                ha='center', style='italic')
+    # Phase 2: Inward spiral around q* with DECREASING radius
+    spiral_center_x, spiral_center_y = post_x, prior_y
+    t_spiral = np.linspace(0, 3 * np.pi, 100)  # Multiple loops
+    initial_radius = 0.65
+    # Radius decreases exponentially - spirals IN to q*
+    radius = initial_radius * np.exp(-0.35 * t_spiral)
+    x_spiral = spiral_center_x + radius * np.cos(t_spiral + 0.5 * np.pi)
+    y_spiral = spiral_center_y + radius * 0.6 * np.sin(t_spiral + 0.5 * np.pi)
 
-    # Add energy level annotation for Hamiltonian
-    ax.annotate(r'$H = \mathrm{const}$', xy=(7, 3.5), fontsize=9, color='#AA8800',
-                ha='center', style='italic')
+    # Combine
+    x_full_spiral = np.concatenate([x_approach, x_spiral])
+    y_full_spiral = np.concatenate([y_approach, y_spiral])
 
-    # Legend (repositioned)
+    ax.plot(x_full_spiral, y_full_spiral, '-', color='#AA8800', linewidth=2.5, zorder=4)
+    # Arrow points to the end (which is at q*)
+    ax.annotate('', xy=(x_spiral[-1], y_spiral[-1]),
+                xytext=(x_spiral[-8], y_spiral[-8]),
+                arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2))
+    ax.text(5.5, prior_y + 0.5, r'spiral in ($\gamma \sim 1$)', fontsize=8,
+            color='#AA8800', ha='center', style='italic')
+
+    # === 3. Hamiltonian: Underdamped oscillation (γ ≈ 0) - ORBITS the minimum ===
+    # Phase 1: Approach from prior to near q*
+    t_approach = np.linspace(0, 1, 30)
+    x_approach = prior_x + (post_x - prior_x - 0.8) * t_approach
+    y_approach = prior_y - 0.6 + 0.2 * np.sin(2 * np.pi * t_approach)
+
+    # Phase 2: Orbit around q* with CONSTANT amplitude (energy conserved)
+    orbit_radius = 0.7
+    orbit_center_x, orbit_center_y = post_x, prior_y - 0.6
+    t_orbit = np.linspace(0.15 * np.pi, 2.5 * np.pi, 100)  # Multiple orbits
+    x_orbit = orbit_center_x + orbit_radius * np.cos(t_orbit)
+    y_orbit = orbit_center_y + orbit_radius * 0.6 * np.sin(t_orbit)  # Elliptical
+
+    # Combine approach and orbit
+    x_osc = np.concatenate([x_approach, x_orbit])
+    y_osc = np.concatenate([y_approach, y_orbit])
+
+    ax.plot(x_osc, y_osc, '-', color='#CC4444', linewidth=2.5, zorder=4)
+    # Arrow shows direction of orbit, not convergence
+    ax.annotate('', xy=(x_orbit[-1], y_orbit[-1]),
+                xytext=(x_orbit[-5], y_orbit[-5]),
+                arrowprops=dict(arrowstyle='->', color='#CC4444', lw=2))
+    ax.text(post_x, prior_y - 1.7, r'orbit ($\gamma \approx 0$)', fontsize=8,
+            color='#CC4444', ha='center', style='italic')
+
+    # Legend
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS['embedding'],
-               markersize=10, label=r'Embedding prior $p$'),
+               markersize=10, label=r'Prior $p$'),
+        Line2D([0], [0], marker='*', color='w', markerfacecolor='black',
+               markersize=12, label=r'Optimal $q^*$'),
         Line2D([0], [0], linestyle='--', color=COLORS['ffn_vfe'], lw=2.5,
-               label=r'VFE: gradient descent'),
+               label=r'VFE (overdamped)'),
         Line2D([0], [0], linestyle='-', color='#AA8800', lw=2.5,
-               label=r'Hamiltonian: symplectic flow'),
+               label=r'Ham (spiral)'),
+        Line2D([0], [0], linestyle='-', color='#CC4444', lw=2.5,
+               label=r'Ham (orbit)'),
     ]
-    ax.legend(handles=legend_elements, loc='upper right', fontsize=8, framealpha=0.95)
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=7, framealpha=0.95)
 
 
 def create_full_figure():
-    """Create the complete figure with all panels."""
-    fig = plt.figure(figsize=(14, 12))
+    """Create the complete figure with architecture panels only."""
+    fig = plt.figure(figsize=(14, 7))
 
-    # Create grid with more space for bottom panel and caption
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.7], hspace=0.35, wspace=0.2,
-                          top=0.92, bottom=0.12)
+    # Simple side-by-side layout
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax2 = fig.add_subplot(1, 2, 2)
 
-    # Top row: architectures
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[0, 1])
-
-    # Bottom row: manifold visualization (spans both columns)
-    ax3 = fig.add_subplot(gs[1, :])
-
-    # Draw each panel
+    # Draw architecture panels
     create_vfe_architecture(ax1)
     create_hamiltonian_architecture(ax2)
-    create_manifold_diagram(ax3)
 
     # Main title
-    fig.suptitle('Gauge Transformer Architectures: VFE vs Hamiltonian Dynamics',
-                 fontsize=14, fontweight='bold', y=0.96)
+    fig.suptitle('Gauge Transformer Architectures',
+                 fontsize=14, fontweight='bold', y=0.98)
 
-    # Add caption with proper spacing
+    plt.tight_layout(rect=[0, 0.08, 1, 0.95])
+
+    # Add caption
     caption = (
-        "Both architectures use KL-divergence based attention with gauge-equivariant parallel transport.\n"
-        "VFE descent minimizes free energy via gradient flow. Hamiltonian dynamics conserves energy via symplectic integration.\n"
-        "The self-consistency term KL(q||p) anchors beliefs to embedding priors, enabling gradient flow to learn embeddings."
+        "Both architectures use KL-divergence attention with gauge-equivariant parallel transport.\n"
+        "VFE descent minimizes free energy via gradient flow. Hamiltonian dynamics conserves energy via symplectic integration."
     )
-    fig.text(0.5, 0.03, caption, ha='center', fontsize=9, style='italic',
-             wrap=True, color='gray')
+    fig.text(0.5, 0.02, caption, ha='center', fontsize=9, style='italic', color='gray')
 
     return fig
 
