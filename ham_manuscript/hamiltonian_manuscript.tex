@@ -61,9 +61,9 @@ Transformers, Hamiltonian Dynamics, Gauge Theory, Symplectic Integration, Mechan
 \label{sec:intro}
 %=============================================================================
 
-The transformer architecture \citep{vaswani2017attention} dominates modern deep learning, yet its feedforward network (FFN) remains opaque: a two-layer MLP that transforms representations through high-dimensional nonlinear mappings resistant to mechanistic interpretation. We ask: \emph{can we replace learned transformations with principled dynamical systems that achieve comparable performance while enabling exact causal analysis?}
+The transformer architecture \citep{Vaswani2017} dominates modern deep learning, yet its feedforward network (FFN) remains opaque: a two-layer MLP that transforms representations through high-dimensional nonlinear mappings resistant to mechanistic interpretation. We ask: \emph{can we replace learned transformations with principled dynamical systems that achieve comparable performance while enabling exact causal analysis?}
 
-Recent work has established that attention mechanisms and backpropagation emerge as degenerate limits of gauge-theoretic variational inference \citep{dennis2025attention}, with practical implementations achieving competitive performance without neural architectures \citep{dennis2025implementing}. Separately, \citet{dennis2025inertia} showed that the Fisher information metric provides an inertial mass tensor for belief dynamics, extending the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics. This paper unifies these threads: we implement Hamiltonian belief dynamics within a transformer architecture, replacing learned FFNs with symplectic integration on statistical manifolds.
+Recent work has established that attention mechanisms and backpropagation emerge as degenerate limits of gauge-theoretic variational inference \citep{Dennis2025atten}, with practical implementations achieving competitive performance without neural architectures \citep{Dennis2025trans}. Separately, \citet{Dennis2025inertia} showed that the Fisher information metric provides an inertial mass tensor for belief dynamics, extending the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics. This paper unifies these threads: we implement Hamiltonian belief dynamics within a transformer architecture, replacing learned FFNs with symplectic integration on statistical manifolds.
 
 We answer affirmatively by introducing \textbf{Reversible Gauge Transformers}, which make three interconnected contributions:
 
@@ -97,17 +97,17 @@ The St\"{o}rmer-Verlet (leapfrog) integrator preserves the symplectic 2-form $\o
 \label{sec:related}
 %=============================================================================
 
-\paragraph{Gauge-Theoretic Foundations.} \citet{dennis2025attention} established that standard transformer attention emerges as the ``isotropic, flat-bundle, Dirac-delta limit'' of gauge-equivariant variational inference on principal bundles. In this framework, each token is an agent maintaining Gaussian beliefs over a latent space, with attention weights arising from KL divergence rather than learned projections. \citet{dennis2025implementing} validated this theory empirically, demonstrating that explicit probabilistic inference (without neural architectures) achieves 20\% lower perplexity than standard transformers on WikiText-2 while using 25\% fewer parameters. Our work extends this framework by replacing gradient-based FFN dynamics with Hamiltonian mechanics.
+\paragraph{Gauge-Theoretic Foundations.} \citet{Dennis2025atten} established that standard transformer attention emerges as the ``isotropic, flat-bundle, Dirac-delta limit'' of gauge-equivariant variational inference on principal bundles. In this framework, each token is an agent maintaining Gaussian beliefs over a latent space, with attention weights arising from KL divergence rather than learned projections. \citet{Dennis2025trans} validated this theory empirically, demonstrating that explicit probabilistic inference (without neural architectures) achieves 20\% lower perplexity than standard transformers on WikiText-2 while using 25\% fewer parameters. Our work extends this framework by replacing gradient-based FFN dynamics with Hamiltonian mechanics.
 
-\paragraph{Hamiltonian Belief Dynamics.} \citet{dennis2025inertia} showed that the second-order Taylor expansion of KL divergence reveals kinetic energy terms systematically neglected in standard active inference. The Fisher information metric emerges as an inertial mass tensor, with the striking identification: \emph{precision equals mass}. This extends the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics, predicting oscillations, overshooting, and resonance phenomena in belief dynamics. We implement these dynamics within a transformer architecture.
+\paragraph{Hamiltonian Belief Dynamics.} \citet{Dennis2025inertia} showed that the second-order Taylor expansion of KL divergence reveals kinetic energy terms systematically neglected in standard active inference. The Fisher information metric emerges as an inertial mass tensor, with the striking identification: \emph{precision equals mass}. This extends the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics, predicting oscillations, overshooting, and resonance phenomena in belief dynamics. We implement these dynamics within a transformer architecture.
 
 \paragraph{Reversible Architectures.} RevNets \citep{gomez2017reversible} achieve memory efficiency through additive coupling layers; i-RevNet \citep{jacobsen2018irevnet} extends this to fully invertible networks. Reformer \citep{kitaev2020reformer} uses reversible residual layers. Our reversibility emerges from Hamiltonian mechanics rather than architectural constraints, enabling interpretability beyond memory savings.
 
 \paragraph{Hamiltonian and Lagrangian Neural Networks.} \citet{greydanus2019hamiltonian} learn Hamiltonians from trajectory data; \citet{cranmer2020lagrangian} learn Lagrangians. Neural ODEs \citep{chen2018neural} parameterize continuous dynamics. We \emph{prescribe} the Hamiltonian from variational principles rather than learning it, yielding zero-parameter dynamics with guaranteed conservation laws.
 
-\paragraph{Gauge Equivariant Networks.} Group equivariant CNNs \citep{cohen2016group} respect symmetries in data; \citet{bronstein2021geometric} survey geometric deep learning. Gauge equivariant mesh CNNs \citep{de2020gauge} handle manifold data. Our $\mathrm{SO}(3)$ gauge structure arises from active inference on statistical manifolds---representing internal reference frames of inference agents---rather than symmetries in external data.
+\paragraph{Gauge Equivariant Networks.} Group equivariant CNNs \citep{Cohen2016} respect symmetries in data; \citet{Bronstein2021} survey geometric deep learning. Gauge equivariant mesh CNNs \citep{de2020gauge} handle manifold data. Our $\mathrm{SO}(3)$ gauge structure arises from active inference on statistical manifolds---representing internal reference frames of inference agents---rather than symmetries in external data.
 
-\paragraph{Active Inference.} The free energy principle \citep{friston2010free} formulates perception and action as variational free energy minimization. \citet{parr2022active} provide a comprehensive treatment. We extend this framework to transformers: our FFN performs active inference via Hamiltonian flow on belief space, with the free energy functional serving as the potential.
+\paragraph{Active Inference.} The free energy principle \citep{Friston2010} formulates perception and action as variational free energy minimization. \citet{Parr2022} provide a comprehensive treatment. We extend this framework to transformers: our FFN performs active inference via Hamiltonian flow on belief space, with the free energy functional serving as the potential.
 
 \paragraph{Information-Geometric Attention.} \citet{chen2021wasserstein} use Wasserstein distance for attention; \citet{martins2020sparse} introduce sparse structured attention. Our KL-divergence attention with parallel transport is, to our knowledge, the first to eliminate learned $\bm{W}_Q, \bm{W}_K$ entirely while achieving competitive performance.
 
@@ -129,7 +129,7 @@ The natural Riemannian metric on $\mathcal{M}$ is the \textbf{Fisher-Rao metric}
 ds^2 = d\bm{\mu}^\top \Sig^{-1} d\bm{\mu} + \frac{1}{4}\tr\left(\Sig^{-1} d\Sig\, \Sig^{-1} d\Sig\right)
 \label{eq:fisher_rao}
 \end{equation}
-This metric makes KL divergence the squared geodesic distance to second order \citep{amari2016information}, grounding our attention mechanism in information geometry.
+This metric makes KL divergence the squared geodesic distance to second order \citep{Amari2016}, grounding our attention mechanism in information geometry.
 
 \subsection{Gauge Structure on $\mathrm{SO}(3)$ Bundle}
 \label{sec:gauge_structure}
@@ -157,7 +157,7 @@ where $R_{ij} = R(g_i) R(g_j)^{-1} = \exp(\bm{\phi}_i)\exp(-\bm{\phi}_j)$. This 
 \subsection{Variational Free Energy}
 \label{sec:free_energy}
 
-The potential energy in our Hamiltonian is the variational free energy from active inference. Following \citet{dennis2025attention}, the complete functional is:
+The potential energy in our Hamiltonian is the variational free energy from active inference. Following \citet{Dennis2025atten}, the complete functional is:
 \begin{equation}
 \F = \underbrace{\alpha \sum_i \KL(q_i \| p_i)}_{\text{self-coupling}} + \underbrace{\lambda_\beta \sum_{i,j} \beta_{ij} \KL(q_i \| \Omega_{ij}[q_j])}_{\text{belief alignment}} + \underbrace{\CE(\bm{W}_{\mathrm{out}}\bm{\mu}, \bm{y})}_{\text{observation}}
 \label{eq:free_energy}
@@ -171,7 +171,7 @@ where:
 
 The \textbf{self-coupling} term anchors evolved beliefs to their embedding priors. The \textbf{alignment} term encourages beliefs to agree after parallel transport. The \textbf{observation} term grounds beliefs in discrete token predictions.
 
-\paragraph{Symmetry Breaking.} In the absence of observations ($\CE = 0$), the free energy possesses a vacuum symmetry: all agents can simultaneously rotate their frames $\bm{\phi}_i \to \bm{\phi}_i + \bm{\phi}_0$ without changing $\F$ \citep{dennis2025attention}. This is an epistemic analog of Goldstone's theorem in field theory. Observations break this symmetry, forcing agents to specialize based on sensory evidence. Training thus corresponds to symmetry-breaking dynamics on the gauge orbit.
+\paragraph{Symmetry Breaking.} In the absence of observations ($\CE = 0$), the free energy possesses a vacuum symmetry: all agents can simultaneously rotate their frames $\bm{\phi}_i \to \bm{\phi}_i + \bm{\phi}_0$ without changing $\F$ \citep{Dennis2025atten}. This is an epistemic analog of Goldstone's theorem in field theory. Observations break this symmetry, forcing agents to specialize based on sensory evidence. Training thus corresponds to symmetry-breaking dynamics on the gauge orbit.
 
 %=============================================================================
 \section{Architecture}
@@ -206,14 +206,14 @@ We replace the standard FFN with symplectic integration of Hamilton's equations.
 \bm{z} = (\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi) \in T^*\mathcal{M}
 \end{equation}
 
-\paragraph{Kinetic Energy and the Mass Matrix.} Following \citet{dennis2025inertia}, the kinetic terms arise from the natural metrics on each factor, with the Fisher information serving as an inertial mass tensor:
+\paragraph{Kinetic Energy and the Mass Matrix.} Following \citet{Dennis2025inertia}, the kinetic terms arise from the natural metrics on each factor, with the Fisher information serving as an inertial mass tensor:
 \begin{align}
 T_\mu &= \frac{1}{2} \pip_\mu^\top M^{-1} \pip_\mu && \text{(Fisher-Rao on $\R^K$)} \label{eq:T_mu}\\
 T_\Sigma &= \frac{1}{4} \tr\left(\Sig^{-1} \dot{\Sig}\, \Sig^{-1} \dot{\Sig}\right) && \text{(Affine-invariant on $\SPD(K)$)} \label{eq:T_sigma}\\
 T_\phi &= \frac{1}{2} \langle \pip_\phi, \pip_\phi \rangle_{\mathfrak{g}} && \text{(Killing form on $\so(3)$)} \label{eq:T_phi}
 \end{align}
 
-The effective mass matrix $M_i$ for agent $i$ accumulates Fisher information from all sources of constraint \citep{dennis2025inertia}:
+The effective mass matrix $M_i$ for agent $i$ accumulates Fisher information from all sources of constraint \citep{Dennis2025inertia}:
 
 \begin{equation}
 M_i = \underbrace{\Lambda_{p_i}}_{\text{prior precision}} + \underbrace{\Lambda_{o_i}}_{\text{observation precision}} + \underbrace{\sum_k \beta_{ik} \tilde{\Lambda}_{q_k}}_{\text{incoming social}} + \underbrace{\sum_j \beta_{ji} \Lambda_{q_i}}_{\text{outgoing social}}
@@ -439,18 +439,18 @@ With damping ($\gamma = 0.1$) & 10 & 0.01 & [TBD] & N/A \\
 The Hamiltonian FFN succeeds because:
 
 \begin{enumerate}
-\item \textbf{Free energy is the correct objective.} Active inference establishes that perception corresponds to minimizing variational free energy \citep{friston2010free,parr2022active}. Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow.
+\item \textbf{Free energy is the correct objective.} Active inference establishes that perception corresponds to minimizing variational free energy \citep{Friston2010,Parr2022}. Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow.
 
-\item \textbf{Geometry encodes inductive bias.} The Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections encode priors about belief transformation that would otherwise require learning. As shown by \citet{dennis2025attention}, standard transformer attention emerges as a degenerate limit of this richer geometry.
+\item \textbf{Geometry encodes inductive bias.} The Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections encode priors about belief transformation that would otherwise require learning. As shown by \citet{Dennis2025atten}, standard transformer attention emerges as a degenerate limit of this richer geometry.
 
 \item \textbf{Symplectic structure preserves information.} Unlike gradient descent, which loses information through contraction, Hamiltonian flow is volume-preserving in phase space (Liouville's theorem). This enables exact reversal.
 
-\item \textbf{Precision equals mass.} Following \citet{dennis2025inertia}, confident beliefs (high precision $\Lambda = \Sig^{-1}$) are ``heavy'' and resist change, while uncertain beliefs are ``light'' and respond readily. This provides a natural regularization: the dynamics automatically respect uncertainty.
+\item \textbf{Precision equals mass.} Following \citet{Dennis2025inertia}, confident beliefs (high precision $\Lambda = \Sig^{-1}$) are ``heavy'' and resist change, while uncertain beliefs are ``light'' and respond readily. This provides a natural regularization: the dynamics automatically respect uncertainty.
 \end{enumerate}
 
 \subsection{Connection to Damped Belief Dynamics}
 
-In the presence of dissipation (modeling attention deficits, metabolic costs, or environmental noise), the dynamics become a damped oscillator \citep{dennis2025inertia}:
+In the presence of dissipation (modeling attention deficits, metabolic costs, or environmental noise), the dynamics become a damped oscillator \citep{Dennis2025inertia}:
 \begin{equation}
 M_i \ddot{\mu}_i + \gamma_i \dot{\mu}_i + \nabla_{\mu_i} \F = 0
 \label{eq:damped_oscillator}
@@ -479,7 +479,7 @@ This contrasts sharply with post-hoc interpretability methods (attention visuali
 
 \subsection{Social Mass and Attention Dynamics}
 
-The mass matrix (\Cref{eq:mass_matrix}) reveals a striking property: \emph{attention directed toward an agent increases its effective mass} \citep{dennis2025inertia}. The ``outgoing social'' term $\sum_j \beta_{ji} \Lambda_{q_i}$ shows that when other tokens attend strongly to token $i$, that token becomes more resistant to change.
+The mass matrix (\Cref{eq:mass_matrix}) reveals a striking property: \emph{attention directed toward an agent increases its effective mass} \citep{Dennis2025inertia}. The ``outgoing social'' term $\sum_j \beta_{ji} \Lambda_{q_i}$ shows that when other tokens attend strongly to token $i$, that token becomes more resistant to change.
 
 In transformer terms: tokens that are heavily attended-to (e.g., important contextual words) acquire greater inertia and maintain their representations more stably through layers. This provides a geometric explanation for why attention creates ``anchors'' in the representation---the attended-to tokens are literally more massive and harder to move.
 
@@ -499,11 +499,11 @@ Conversely, tokens that attend strongly to others (high $\sum_k \beta_{ik}$) inh
 \label{sec:conclusion}
 %=============================================================================
 
-We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Building on the theoretical foundation that transformers are degenerate limits of gauge-theoretic variational inference \citep{dennis2025attention} and the identification of Fisher information as inertial mass \citep{dennis2025inertia}, we showed that:
+We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Building on the theoretical foundation that transformers are degenerate limits of gauge-theoretic variational inference \citep{Dennis2025atten} and the identification of Fisher information as inertial mass \citep{Dennis2025inertia}, we showed that:
 
 \begin{itemize}
 \item The FFN can be replaced by symplectic integration with \textbf{zero learned parameters}
-\item Performance is comparable to learned MLPs, consistent with prior validation \citep{dennis2025implementing}
+\item Performance is comparable to learned MLPs, consistent with prior validation \citep{Dennis2025trans}
 \item \textbf{Exact reversibility} (to $10^{-7}$ precision) enables mechanistic token attribution
 \item \textbf{Energy conservation} via the leapfrog integrator provides stability guarantees
 \item The \textbf{mass = precision} identification gives beliefs physical inertia, providing natural regularization
@@ -517,7 +517,7 @@ This work suggests that transformer FFN parameters---which constitute the majori
 \item Explore the underdamped regime for belief oscillations and resonance phenomena
 \item Extend gauge group from $\mathrm{SO}(3)$ to $\mathrm{SU}(n)$ or Lorentz group for richer representational structure
 \item Develop reversibility-based interpretability tools for production models
-\item Investigate whether standard transformers implicitly minimize gauge curvature, as suggested by \citet{dennis2025implementing}
+\item Investigate whether standard transformers implicitly minimize gauge curvature, as suggested by \citet{Dennis2025trans}
 \item Combine with Hamiltonian Monte Carlo for Bayesian uncertainty quantification
 \end{enumerate}
 
