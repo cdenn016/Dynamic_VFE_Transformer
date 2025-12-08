@@ -234,59 +234,63 @@ def create_manifold_diagram(ax):
             color=COLORS['manifold'], style='italic')
 
     # Prior point (left side)
-    prior_x, prior_y = 2, 2.6
+    prior_x, prior_y = 2.5, 2.6
     ax.plot(prior_x, prior_y, 'o', color=COLORS['embedding'], markersize=14, zorder=5)
-    ax.text(prior_x, prior_y - 0.6, r'Prior $p$', ha='center', fontsize=9,
+    ax.text(prior_x - 0.8, prior_y, r'Prior $p$', ha='center', va='center', fontsize=9,
             fontweight='bold', color=COLORS['embedding'])
-    ax.text(prior_x, prior_y + 0.5, r'$(\mu_p, \Sigma_p)$', ha='center', fontsize=8, color=COLORS['math'])
 
-    # Posterior point (VFE) - middle
-    post_vfe_x, post_vfe_y = 6, 2.8
-    ax.plot(post_vfe_x, post_vfe_y, 's', color=COLORS['ffn_vfe'], markersize=12, zorder=5)
-    ax.text(post_vfe_x, post_vfe_y - 0.6, r'$q$ (VFE)', ha='center', fontsize=9,
-            fontweight='bold', color=COLORS['ffn_vfe'])
+    # Optimal posterior point (SAME endpoint for both methods)
+    post_x, post_y = 9.5, 2.6
+    ax.plot(post_x, post_y, '*', color='black', markersize=18, zorder=6)
+    ax.text(post_x + 0.8, post_y, r'$q^*$', ha='left', va='center', fontsize=11,
+            fontweight='bold', color='black')
+    ax.text(post_x, post_y - 0.55, r'optimal posterior', ha='center', fontsize=8, color='gray')
 
-    # Posterior point (Hamiltonian) - right
-    post_ham_x, post_ham_y = 9.5, 2.4
-    ax.plot(post_ham_x, post_ham_y, '^', color='#AA8800', markersize=13, zorder=5)
-    ax.text(post_ham_x, post_ham_y - 0.6, r'$q$ (Ham)', ha='center', fontsize=9,
-            fontweight='bold', color='#AA8800')
-
-    # VFE gradient descent path (dashed, direct)
-    t_vfe = np.linspace(0, 1, 30)
-    x_vfe = prior_x + (post_vfe_x - prior_x) * t_vfe
-    y_vfe = prior_y + (post_vfe_y - prior_y) * t_vfe + 0.3 * np.sin(2 * np.pi * t_vfe)
+    # VFE gradient descent path (dashed, direct descent - no oscillation)
+    t_vfe = np.linspace(0, 1, 40)
+    x_vfe = prior_x + (post_x - prior_x) * t_vfe
+    y_vfe = np.full_like(x_vfe, prior_y)  # Straight horizontal line (direct descent)
     ax.plot(x_vfe, y_vfe, '--', color=COLORS['ffn_vfe'], linewidth=2.5, zorder=4)
-    ax.annotate('', xy=(post_vfe_x - 0.15, post_vfe_y + 0.02),
+    ax.annotate('', xy=(post_x - 0.15, post_y),
                 xytext=(x_vfe[-3], y_vfe[-3]),
                 arrowprops=dict(arrowstyle='->', color=COLORS['ffn_vfe'], lw=2.5))
 
-    # Hamiltonian orbit path (solid, oscillatory - energy conserving)
-    t_ham = np.linspace(0, 1, 80)
-    x_ham = prior_x + (post_ham_x - prior_x) * t_ham
-    # Oscillatory path showing energy conservation
-    y_ham = prior_y + (post_ham_y - prior_y) * t_ham + 0.6 * np.sin(5 * np.pi * t_ham) * np.exp(-1.5 * t_ham)
-    ax.plot(x_ham, y_ham, '-', color='#AA8800', linewidth=2.5, zorder=4)
-    ax.annotate('', xy=(post_ham_x - 0.15, post_ham_y + 0.05),
-                xytext=(x_ham[-3], y_ham[-3]),
-                arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2.5))
+    # Hamiltonian orbit path (solid, SPIRAL into endpoint)
+    # Use parametric spiral that converges to (post_x, post_y)
+    t_ham = np.linspace(0, 1, 150)
+    # Spiral parameters: starts at prior, spirals into posterior
+    # Radius decreases as we approach the end
+    radius = 0.9 * (1 - t_ham)**0.7  # Decreasing radius
+    angle = 6 * np.pi * t_ham  # Multiple rotations
+    # Center moves from prior to posterior
+    center_x = prior_x + (post_x - prior_x) * t_ham
+    center_y = prior_y + (post_y - prior_y) * t_ham
+    # Add spiral offset
+    x_ham = center_x + radius * np.cos(angle)
+    y_ham = center_y + radius * np.sin(angle)
+    ax.plot(x_ham, y_ham, '-', color='#AA8800', linewidth=2, zorder=4)
+    ax.annotate('', xy=(post_x, post_y - 0.1),
+                xytext=(x_ham[-5], y_ham[-5]),
+                arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2))
 
-    # Add gradient annotation for VFE
-    ax.annotate(r'$-\nabla F$', xy=(4, 2.9), fontsize=9, color=COLORS['ffn_vfe'],
-                ha='center', style='italic')
+    # Add annotation for VFE path
+    ax.text(6, 2.95, r'VFE: $-\nabla_\mu F$', fontsize=9, color=COLORS['ffn_vfe'],
+            ha='center', style='italic')
 
-    # Add energy level annotation for Hamiltonian
-    ax.annotate(r'$H = \mathrm{const}$', xy=(7, 3.5), fontsize=9, color='#AA8800',
-                ha='center', style='italic')
+    # Add annotation for Hamiltonian path
+    ax.text(4.5, 3.6, r'Ham: spiral in', fontsize=9, color='#AA8800',
+            ha='center', style='italic')
 
     # Legend (repositioned)
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS['embedding'],
-               markersize=10, label=r'Embedding prior $p$'),
+               markersize=10, label=r'Prior $p$ (from embedding)'),
+        Line2D([0], [0], marker='*', color='w', markerfacecolor='black',
+               markersize=12, label=r'Optimal posterior $q^*$'),
         Line2D([0], [0], linestyle='--', color=COLORS['ffn_vfe'], lw=2.5,
                label=r'VFE: gradient descent'),
         Line2D([0], [0], linestyle='-', color='#AA8800', lw=2.5,
-               label=r'Hamiltonian: symplectic flow'),
+               label=r'Hamiltonian: energy-conserving'),
     ]
     ax.legend(handles=legend_elements, loc='upper right', fontsize=8, framealpha=0.95)
 
