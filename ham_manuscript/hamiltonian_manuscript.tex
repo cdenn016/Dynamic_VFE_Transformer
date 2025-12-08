@@ -220,7 +220,7 @@ M_i = \underbrace{\Lambda_{p_i}}_{\text{prior precision}} + \underbrace{\Lambda_
 \label{eq:mass_matrix}
 \end{equation}
 
-where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k$'s precision transported to agent $i$'s frame. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
+where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k$'s precision transported to agent $i$'s frame via the gauge connection. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
 
 \paragraph{Categorical Observation Precision.} While the theoretical framework uses multivariate Gaussian observations, transformer language models predict categorical distributions over vocabulary tokens. To bridge this gap, we derive the observation precision $\Lambda_{o_i}$ from the Hessian of the cross-entropy loss with respect to beliefs.
 
@@ -242,6 +242,13 @@ This is the Fisher information matrix of the categorical distribution, which sim
 \end{equation}
 
 where $\bm{w} \in \R^K$ is a random vector with $P(\bm{w} = \bm{w}_v) = p_v$. This covariance-based formulation reveals a geometric interpretation: the observation precision measures how much the output projection vectors ``spread out'' under the current belief-induced distribution. High-entropy predictions (uniform $\bm{p}$) yield high observation precision, anchoring beliefs more strongly; peaked predictions reduce the effective constraint.
+
+\paragraph{Emergent Nonlinearity.} Standard transformers use ad-hoc nonlinearities like GELU or ReLU in the FFN. In our framework, the nonlinearity emerges naturally from differentiating the softmax attention weights. The force on beliefs includes:
+\begin{equation}
+\frac{\partial \beta_{ij}}{\partial \bm{\mu}_i} = \frac{\beta_{ij}}{\kappa}\left[\frac{\partial \KL_{ij}}{\partial \bm{\mu}_i} - \sum_k \beta_{ik} \frac{\partial \KL_{ik}}{\partial \bm{\mu}_i}\right]
+\label{eq:nonlinearity}
+\end{equation}
+This is the softmax Jacobian applied to KL gradients---a principled nonlinearity that emerges from attention dynamics rather than being imposed. Physical interpretation: as beliefs $\bm{\mu}_i$ change, attention weights $\beta_{ij}$ redistribute, creating feedback that depends on the current attention pattern. This is the mechanism by which ``agents adjust attention as beliefs change.''
 
 \paragraph{Hamilton's Equations.} The equations of motion are:
 \begin{align}
@@ -382,16 +389,18 @@ The central interpretability result: we can trace output tokens back to their in
 \centering
 \caption{Trajectory reversal accuracy. Initial state recovery after forward-backward integration.}
 \label{tab:reversibility}
-\begin{tabular}{cccc}
+\begin{tabular}{ccccc}
 \toprule
-$n_{\mathrm{steps}}$ & $\dt$ & Relative Error $\|\bm{\mu}_0 - \bm{\mu}_0'\|/\|\bm{\mu}_0\|$ \\
+$n_{\mathrm{steps}}$ & $\dt$ & $\bm{\mu}$ Error & $\Sig$ Error \\
 \midrule
-10 & 0.01 & $\sim 10^{-7}$ \\
-20 & 0.01 & $\sim 10^{-7}$ \\
-10 & 0.02 & $\sim 10^{-6}$ \\
+10 & 0.01 & $\sim 10^{-7}$ & $\sim 10^{-2}$ \\
+20 & 0.01 & $\sim 10^{-7}$ & $\sim 10^{-2}$ \\
+10 & 0.02 & $\sim 10^{-6}$ & $\sim 10^{-2}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\noindent\textbf{Note on $\bm{\mu}$ vs $\Sig$ reversibility:} The $\bm{\mu}$ dynamics use a constant mass matrix (prior $\Sig_p$), yielding exact symplecticity and excellent reversal. The $\Sig$ dynamics on $\SPD(K)$ have position-dependent curvature via $T_\Sigma = \tr(\pi_\Sigma \Sig \pi_\Sigma \Sig)$, causing explicit leapfrog to be only first-order accurate on the curved manifold. For practical transformer use (1--4 steps per layer), this is negligible; token attribution via $\bm{\mu}$ reversal works excellently.
 
 % THE MONEY FIGURE
 \begin{figure}[h]
