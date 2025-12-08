@@ -75,3 +75,102 @@ The `spd_kinetic_gradient` correction improves but doesn't achieve exact symplec
 **Honest uncertainty:**
 - "I'm not sure this is right" beats confident speculation
 - Acknowledge when something needs verification
+
+## Hamiltonian Transformer Architecture Summary
+
+### Core Difference from Standard Transformer
+
+| Component | Standard Transformer | Hamiltonian Transformer |
+|-----------|---------------------|------------------------|
+| Attention | Q, K, V projections | KL-divergence + parallel transport (no W_Q, W_K) |
+| FFN | Learned MLP + GELU | Leapfrog integration on free energy landscape |
+| Nonlinearity | GELU/ReLU (ad hoc) | ∂β/∂μ (emerges from attention gradients) |
+| FFN params | ~2/3 of model | Zero learned MLP weights |
+
+### Beliefs vs Priors
+
+| Symbol | Name | Learned? | Evolves in forward pass? |
+|--------|------|----------|-------------------------|
+| μ_p, Σ_p | Prior (embedding) | Yes | No |
+| μ_q, Σ_q | Belief (posterior) | No | Yes, via Hamiltonian |
+
+Training shapes the prior landscape. The forward pass evolves beliefs through that landscape.
+
+### The Mass Matrix (Inertia of Belief)
+
+Full formula from the paper:
+
+```
+M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
+      ↑        ↑              ↑                   ↑
+    prior    obs       incoming attention    outgoing recoil
+```
+
+Where:
+- **Λ_p = Σ_p⁻¹**: Prior precision (resistance from prior expectations)
+- **Λ_o**: Observation precision (sensory grounding) — see below
+- **Σ_k β_{ik} Λ̃_{qk}**: Incoming social precision (pulled toward confident neighbors)
+- **Σ_j β_{ji} Λ_{qi}**: Outgoing recoil precision (Newton's 3rd law)
+- **Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T**: Transported precision via gauge connection
+
+**Physical interpretation**: Precision = Mass. Confident beliefs are heavy, resist change.
+
+### Categorical Observation Precision (Transformer-Specific)
+
+For transformers with softmax output p = softmax(W_out @ μ / τ):
+
+```
+Λ_o = (1/τ²) W^T (diag(p) - pp^T) W = (1/τ²) Cov_p(W)
+```
+
+This is the **Hessian of cross-entropy** with respect to μ:
+- When p is peaked (confident): Λ_o has low rank, weak constraint
+- When p is uniform (uncertain): Λ_o reflects full embedding structure
+- Temperature τ scales precision (lower τ → higher precision)
+
+### The Nonlinearity
+
+Standard transformer: GELU(x) — ad hoc, nobody knows why it works
+
+Ours: ∂β_{ij}/∂μ_i — emerges from differentiating softmax attention:
+
+```
+β_{ij} = softmax(-KL_{ij} / κ)
+
+∂β_{ij}/∂μ_i = β_{ij} · [∂KL_{ij}/∂μ_i - Σ_k β_{ik} · ∂KL_{ik}/∂μ_i] / κ
+```
+
+The nonlinearity IS agents adjusting attention as beliefs change.
+
+### Reversibility Scope
+
+| Component | Reversible? | Why? |
+|-----------|-------------|------|
+| Hamiltonian FFN | Yes, μ to 10⁻⁷, Σ to 10⁻² | Symplectic integrator, negate momentum |
+| Attention | No | Many-to-one weighted average (information loss) |
+| Full transformer | No | Attention breaks it |
+| logits → token | No | argmax is discrete |
+
+### The Central Tension (Resolved)
+
+| Mode | Converges to minimum? | Reversible? |
+|------|----------------------|-------------|
+| Pure Hamiltonian (γ=0) | No, orbits | Yes |
+| Damped (γ>0) | Yes | No |
+
+**Resolution**: We're not optimizing during forward pass. The Hamiltonian FFN is a transformation, not a solver. The orbit after n_steps IS the output. Training adjusts embeddings so this arc produces good predictions.
+
+### What We Claim
+
+1. FFN replaced with zero-parameter Hamiltonian dynamics
+2. FFN exactly reversible (μ to 10⁻⁷, Σ to 10⁻²)
+3. Nonlinearity principled (emerges from ∂β/∂μ), not ad hoc
+4. Mass matrix incorporates categorical observation likelihood
+5. Comparable performance to learned MLP (preliminary small-sequence tests)
+
+### What We Don't Claim (Yet)
+
+1. Full transformer reversibility (attention is lossy)
+2. Token → input attribution (would need cached attention states)
+3. Large-scale benchmarks (WikiText, etc.) — pending compute
+
