@@ -61,164 +61,120 @@ Transformers, Hamiltonian Dynamics, Gauge Theory, Symplectic Integration, Mechan
 \label{sec:intro}
 %=============================================================================
 
-The transformer architecture \citep{Vaswani2017} dominates modern deep learning, yet its feedforward network (FFN) remains opaque: a two-layer MLP that transforms representations through high-dimensional nonlinear mappings resistant to mechanistic interpretation. We ask: \emph{can we replace learned transformations with principled dynamical systems that achieve comparable performance while enabling exact causal analysis?}
+We introduce the first transformer architecture with a \emph{physically} time-reversible feedforward network. By replacing learned MLP weights with Hamiltonian dynamics on a statistical manifold, we obtain an FFN where negating momenta and integrating backward exactly recovers the input from any output, with $\sim 10^{-7}$ relative error. This enables a new form of mechanistic interpretability: precise causal attribution of output features to input tokens through deterministic trajectory reversal.
 
-Recent work has established that attention mechanisms and backpropagation emerge as degenerate limits of gauge-theoretic variational inference \citep{Dennis2025atten}, with practical implementations achieving competitive performance without neural architectures \citep{Dennis2025trans}. Separately, \citet{Dennis2025inertia} showed that the Fisher information metric provides an inertial mass tensor for belief dynamics, extending the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics. This paper unifies these threads: we implement Hamiltonian belief dynamics within a transformer architecture, replacing learned FFNs with symplectic integration on statistical manifolds.
+The transformer's feedforward network presents a fundamental obstacle to interpretability. Constituting roughly two-thirds of model parameters, the FFN implements a high-dimensional nonlinear mapping that resists mechanistic analysis \citep{Vaswani2017}. While reversible architectures exist---RevNets \citep{gomez2017reversible} and Reformer \citep{kitaev2020reformer} achieve memory efficiency through invertible layers---their reversibility is an architectural constraint rather than a physical property. The inverse must be computed through a separate backward pass, and the dynamics carry no conservation laws or symplectic structure.
 
-We answer affirmatively by introducing \textbf{Reversible Gauge Transformers}, which make three interconnected contributions:
+Our approach is fundamentally different. We replace the FFN with symplectic integration of Hamilton's equations, where the variational free energy serves as the potential. The resulting dynamics conserve energy, preserve phase-space volume (Liouville's theorem), and exhibit exact time-reversal symmetry: the transformation $(\bm{q}, \bm{p}) \mapsto (\bm{q}, -\bm{p})$ converts forward evolution into backward evolution. These are not learned properties but mathematical guarantees inherited from Hamiltonian mechanics.
 
-\paragraph{1. Gauge-Theoretic Attention.} Standard attention computes weights via learned projections $\beta_{ij} = \mathrm{softmax}(\bm{q}_i^\top \bm{k}_j / \sqrt{d})$. We replace this with information-geometric attention:
-\begin{equation}
-\beta_{ij} = \mathrm{softmax}\left(-\frac{\KL(q_i \| \Omega_{ij}[q_j])}{\kappa}\right)
-\label{eq:kl_attention}
-\end{equation}
-where $q_i = \N(\bm{\mu}_i, \Sig_i)$ are Gaussian beliefs over a $K$-dimensional latent space, and $\Omega_{ij} = \exp(\bm{\phi}_i)\exp(-\bm{\phi}_j)$ is the parallel transport operator on an $\mathrm{SO}(3)$ principal bundle. This eliminates $\bm{W}_Q, \bm{W}_K$ matrices entirely---attention emerges from geometry.
+This work unifies three theoretical threads. \citet{Dennis2025atten} established that transformer attention emerges as a degenerate limit of gauge-theoretic variational inference on principal bundles, with attention weights arising from KL divergence rather than learned projections. \citet{Dennis2025trans} validated this framework empirically, demonstrating competitive performance without neural network machinery. \citet{Dennis2025inertia} extended the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics, identifying Fisher information as an inertial mass tensor for belief dynamics. We implement these ideas in a working architecture: each token maintains Gaussian beliefs that evolve via leapfrog integration through a free energy landscape shaped by learned embeddings.
 
-\paragraph{2. Hamiltonian Feedforward Dynamics.} We replace the FFN with symplectic integration of Hamilton's equations on the statistical manifold $\mathcal{M} = \R^K \times \SPD(K) \times \so(3)$. The phase space coordinates are beliefs $(\bm{\mu}, \Sig, \bm{\phi})$ and conjugate momenta $(\pip_\mu, \pip_\Sigma, \pip_\phi)$. The Hamiltonian is:
-\begin{equation}
-H = \underbrace{T_\mu + T_\Sigma + T_\phi}_{\text{kinetic energy}} + \underbrace{\F(\bm{\mu}, \Sig, \bm{\phi})}_{\text{potential (free energy)}}
-\label{eq:hamiltonian}
-\end{equation}
-The St\"{o}rmer-Verlet (leapfrog) integrator preserves the symplectic 2-form $\omega = d\bm{q} \wedge d\bm{p}$, conserves energy to $\mathcal{O}(\dt^2)$ per step with no secular drift, and is exactly time-reversible.
+The architecture makes three contributions. First, attention weights emerge from information geometry rather than learned projections: $\beta_{ij} = \mathrm{softmax}(-\KL(q_i \| \Omega_{ij}[q_j])/\kappa)$, where $\Omega_{ij}$ parallel-transports beliefs across an $\mathrm{SO}(3)$ gauge bundle. This eliminates $\bm{W}_Q$ and $\bm{W}_K$ matrices entirely. Second, the FFN contains zero learned parameters---dynamics are prescribed by variational principles, with the Hamiltonian $H = T + \F$ combining kinetic energy from the Fisher-Rao metric with variational free energy as potential. Third, exact reversibility enables token attribution: given any output representation, we recover its complete causal history by integrating backward through phase space.
 
-\paragraph{3. Mechanistic Interpretability via Reversal.} Because Hamiltonian dynamics are reversible, we can trace any output feature back to its input origins by negating momenta and integrating backward. This provides \emph{exact} token attribution---impossible with standard MLPs, which implement many-to-one mappings. We demonstrate recovery of initial states with $\sim 10^{-7}$ relative error.
-
-\subsection{Contributions}
-
-\begin{enumerate}
-\item A transformer architecture where attention weights emerge from KL-divergence on parallel-transported Gaussian beliefs (\Cref{sec:gauge_attention})
-\item Replacement of learned FFN with zero-parameter Hamiltonian dynamics using the variational free energy as potential (\Cref{sec:hamiltonian_ffn})
-\item Theoretical analysis proving gauge covariance, energy conservation, and exact reversibility (\Cref{sec:theory})
-\item Experimental validation showing competitive performance with standard transformers and demonstrating trajectory reversal for token attribution (\Cref{sec:experiments})
-\end{enumerate}
+The paper proceeds as follows. \Cref{sec:related} situates our work within reversible architectures, Hamiltonian neural networks, and geometric deep learning. \Cref{sec:math} develops the mathematical framework: statistical manifolds, gauge structure, and the free energy functional. \Cref{sec:architecture} details the architecture, including KL-attention and the leapfrog integrator. \Cref{sec:theory} proves gauge covariance, energy conservation, and exact reversibility. \Cref{sec:experiments} validates performance and demonstrates trajectory reversal for mechanistic interpretability. \Cref{sec:discussion} interprets the dynamics through thermodynamic and mechanical analogies.
 
 %=============================================================================
 \section{Related Work}
 \label{sec:related}
 %=============================================================================
 
-\paragraph{Gauge-Theoretic Foundations.} \citet{Dennis2025atten} established that standard transformer attention emerges as the ``isotropic, flat-bundle, Dirac-delta limit'' of gauge-equivariant variational inference on principal bundles. In this framework, each token is an agent maintaining Gaussian beliefs over a latent space, with attention weights arising from KL divergence rather than learned projections. \citet{Dennis2025trans} validated this theory empirically, demonstrating that explicit probabilistic inference (without neural architectures) achieves 20\% lower perplexity than standard transformers on WikiText-2 while using 25\% fewer parameters. Our work extends this framework by replacing gradient-based FFN dynamics with Hamiltonian mechanics.
+Our work draws on gauge-theoretic foundations for attention, Hamiltonian formulations of belief dynamics, and reversible neural architectures. We briefly situate our contributions within each.
 
-\paragraph{Hamiltonian Belief Dynamics.} \citet{Dennis2025inertia} showed that the second-order Taylor expansion of KL divergence reveals kinetic energy terms systematically neglected in standard active inference. The Fisher information metric emerges as an inertial mass tensor, with the striking identification: \emph{precision equals mass}. This extends the free energy principle from dissipative gradient flow to conservative Hamiltonian mechanics, predicting oscillations, overshooting, and resonance phenomena in belief dynamics. We implement these dynamics within a transformer architecture.
+\citet{Dennis2025atten} established that standard transformer attention emerges as the ``isotropic, flat-bundle, Dirac-delta limit'' of gauge-equivariant variational inference on principal bundles, with attention weights arising from KL divergence rather than learned projections. \citet{Dennis2025trans} validated this theory empirically, demonstrating that explicit probabilistic inference achieves competitive performance without neural network machinery. Separately, \citet{Dennis2025inertia} showed that second-order expansion of KL divergence reveals kinetic energy terms neglected in standard active inference, with Fisher information emerging as an inertial mass tensor. We unify these frameworks: our architecture implements Hamiltonian belief dynamics within the gauge-theoretic attention mechanism.
 
-\paragraph{Reversible Architectures.} RevNets \citep{gomez2017reversible} achieve memory efficiency through additive coupling layers; i-RevNet \citep{jacobsen2018irevnet} extends this to fully invertible networks. Reformer \citep{kitaev2020reformer} uses reversible residual layers. Our reversibility emerges from Hamiltonian mechanics rather than architectural constraints, enabling interpretability beyond memory savings.
+Reversible architectures have primarily targeted memory efficiency. RevNets \citep{gomez2017reversible} use additive coupling layers; i-RevNet \citep{jacobsen2018irevnet} extends this to fully invertible networks; Reformer \citep{kitaev2020reformer} applies reversible residual layers to transformers. These achieve mathematical invertibility through architectural constraints, but lack the conservation laws and symplectic structure of Hamiltonian systems. Our reversibility emerges from physics rather than construction, enabling mechanistic interpretability beyond memory savings.
 
-\paragraph{Hamiltonian and Lagrangian Neural Networks.} \citet{greydanus2019hamiltonian} learn Hamiltonians from trajectory data; \citet{cranmer2020lagrangian} learn Lagrangians. Neural ODEs \citep{chen2018neural} parameterize continuous dynamics. We \emph{prescribe} the Hamiltonian from variational principles rather than learning it, yielding zero-parameter dynamics with guaranteed conservation laws.
+Hamiltonian and Lagrangian neural networks learn energy functions from data. \citet{greydanus2019hamiltonian} learn Hamiltonians from trajectory observations; \citet{cranmer2020lagrangian} learn Lagrangians; Neural ODEs \citep{chen2018neural} parameterize continuous dynamics with neural networks. In contrast, we \emph{prescribe} the Hamiltonian from variational principles---the free energy functional---yielding zero-parameter dynamics with guaranteed conservation laws.
 
-\paragraph{Gauge Equivariant Networks.} Group equivariant CNNs \citep{Cohen2016} respect symmetries in data; \citet{Bronstein2021} survey geometric deep learning. Gauge equivariant mesh CNNs \citep{de2020gauge} handle manifold data. Our $\mathrm{SO}(3)$ gauge structure arises from active inference on statistical manifolds---representing internal reference frames of inference agents---rather than symmetries in external data.
+Geometric deep learning exploits symmetries in data. Group equivariant CNNs \citep{Cohen2016} respect spatial symmetries; \citet{Bronstein2021} survey the field comprehensively; gauge equivariant mesh CNNs \citep{de2020gauge} handle manifold-valued data. Our $\mathrm{SO}(3)$ gauge structure differs in origin: it represents internal reference frames of inference agents on statistical manifolds, arising from active inference \citep{Friston2010, Parr2022} rather than symmetries in external observations.
 
-\paragraph{Active Inference.} The free energy principle \citep{Friston2010} formulates perception and action as variational free energy minimization. \citet{Parr2022} provide a comprehensive treatment. We extend this framework to transformers: our FFN performs active inference via Hamiltonian flow on belief space, with the free energy functional serving as the potential.
-
-\paragraph{Information-Geometric Attention.} \citet{chen2021wasserstein} use Wasserstein distance for attention; \citet{martins2020sparse} introduce sparse structured attention. Our KL-divergence attention with parallel transport is, to our knowledge, the first to eliminate learned $\bm{W}_Q, \bm{W}_K$ entirely while achieving competitive performance.
+Information-geometric approaches to attention remain underexplored. \citet{chen2021wasserstein} use Wasserstein distance; \citet{martins2020sparse} introduce structured sparsity. Our KL-divergence attention with parallel transport is, to our knowledge, the first to eliminate learned $\bm{W}_Q, \bm{W}_K$ matrices entirely while achieving competitive performance.
 
 %=============================================================================
 \section{Mathematical Framework}
 \label{sec:math}
 %=============================================================================
 
+We develop the geometric structures underlying our architecture: statistical manifolds for representing beliefs, gauge bundles for comparing beliefs across reference frames, and a free energy functional that serves as the Hamiltonian potential.
+
 \subsection{Statistical Manifold and Gaussian Beliefs}
 
-Each token position $i \in \{1, \ldots, N\}$ maintains a Gaussian belief:
-\begin{equation}
-q_i = \N(\bm{\mu}_i, \Sig_i), \quad \bm{\mu}_i \in \R^K, \quad \Sig_i \in \SPD(K)
-\end{equation}
-where $\SPD(K)$ denotes the cone of $K \times K$ symmetric positive-definite matrices. The collection of all beliefs lives on the product manifold $\mathcal{M} = \R^K \times \SPD(K)$.
+Each token position $i \in \{1, \ldots, N\}$ maintains a Gaussian belief $q_i = \N(\bm{\mu}_i, \Sig_i)$ over a $K$-dimensional latent space, with mean $\bm{\mu}_i \in \R^K$ and covariance $\Sig_i \in \SPD(K)$, where $\SPD(K)$ denotes the cone of symmetric positive-definite matrices. The Gaussian family is a natural choice for several reasons: KL divergence admits closed form, the family is closed under linear operations (enabling parallel transport), and the sufficient statistics $(\bm{\mu}, \Sig)$ provide a finite-dimensional parameterization of beliefs.
 
-The natural Riemannian metric on $\mathcal{M}$ is the \textbf{Fisher-Rao metric}:
+The collection of all Gaussian beliefs forms a statistical manifold $\mathcal{M} = \R^K \times \SPD(K)$ equipped with the Fisher-Rao metric \citep{Amari2016}:
 \begin{equation}
 ds^2 = d\bm{\mu}^\top \Sig^{-1} d\bm{\mu} + \frac{1}{4}\tr\left(\Sig^{-1} d\Sig\, \Sig^{-1} d\Sig\right)
 \label{eq:fisher_rao}
 \end{equation}
-This metric makes KL divergence the squared geodesic distance to second order \citep{Amari2016}, grounding our attention mechanism in information geometry.
+This metric has a distinguished property: KL divergence equals the squared geodesic distance to second order. Our attention mechanism inherits this geometry---tokens attend to neighbors based on information-theoretic distance rather than learned projections.
 
-\subsection{Notation: Priors vs Momenta}
-\label{sec:notation}
+\paragraph{Notation.} We distinguish objects that share similar symbols but inhabit different spaces. The \textbf{belief} $q_i$ and \textbf{prior} $p_i = \N(\bm{\mu}_i^{\mathrm{embed}}, \Sig_i^{\mathrm{embed}})$ are probability distributions; the prior encodes the learned embedding that anchors token $i$. The \textbf{momentum} $\pip$ (Greek pi) is a cotangent vector conjugate to position coordinates---it lives in $T^*\mathcal{M}$, not in the space of distributions. These categories are summarized in \Cref{tab:notation}. When context permits, we write $\bm{\mu}_i$ for the evolving belief mean and suppress subscripts distinguishing $q$ from $p$.
 
-A notational clarification is essential. We distinguish three categories of objects that could be confused:
-
-\begin{center}
+\begin{table}[h]
+\centering
+\caption{Notation for distributions vs.\ phase space coordinates.}
+\label{tab:notation}
 \begin{tabular}{llll}
 \toprule
 \textbf{Symbol} & \textbf{Name} & \textbf{Type} & \textbf{Role} \\
 \midrule
-$q_i = \N(\bm{\mu}_{q_i}, \Sig_{q_i})$ & Belief & Distribution & Evolves via Hamiltonian \\
-$p_i = \N(\bm{\mu}_{p_i}, \Sig_{p_i})$ & Prior & Distribution & Fixed (learned embeddings) \\
-$\pip_\mu, \pip_\Sigma, \pip_\phi$ & Momenta & Cotangent vectors & Conjugate to positions \\
+$q_i = \N(\bm{\mu}_{q}, \Sig_{q})$ & Belief & Distribution & Evolves via Hamiltonian \\
+$p_i = \N(\bm{\mu}_{p}, \Sig_{p})$ & Prior & Distribution & Fixed (learned embedding) \\
+$\pip_\mu, \pip_\Sigma, \pip_\phi$ & Momenta & Cotangent vectors & Conjugate to $(\bm{\mu}, \Sig, \bm{\phi})$ \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
-\paragraph{Critical distinction.} The \textbf{prior} $p_i$ (Latin letter) is a probability distribution---the embedding that anchors token $i$'s beliefs. The \textbf{momentum} $\pip$ (Greek letter pi) is a cotangent vector in phase space, conjugate to the position coordinates $(\bm{\mu}, \Sig, \bm{\phi})$. These live in entirely different spaces:
-\begin{align}
-p_i &\in \mathcal{P}(\R^K) && \text{(space of probability distributions)} \\
-\pip_\mu &\in T^*_\mu \R^K \cong \R^K && \text{(cotangent space at $\bm{\mu}$)}
-\end{align}
-
-The subscripts $q$ and $p$ on the means $\bm{\mu}_{q_i}, \bm{\mu}_{p_i}$ and covariances $\Sig_{q_i}, \Sig_{p_i}$ indicate whether we refer to the belief or prior, respectively. When context is clear, we drop subscripts: $\bm{\mu}_i$ for the evolving belief mean, $\bm{\mu}_i^{\mathrm{embed}}$ for the fixed prior mean.
-
-\subsection{Gauge Structure on $\mathrm{SO}(3)$ Bundle}
+\subsection{Gauge Structure}
 \label{sec:gauge_structure}
 
-Each agent $i$ carries a \textbf{gauge frame} $\bm{\phi}_i \in \so(3) \cong \R^3$ (axis-angle representation). The corresponding Lie group element is:
-\begin{equation}
-g_i = \exp(\bm{\phi}_i) \in \mathrm{SO}(3)
-\end{equation}
-which acts on beliefs via the $K$-dimensional representation:
+Comparing beliefs across tokens requires a notion of ``same direction'' in latent space. Following \citet{Dennis2025atten}, we model this via gauge theory: each agent $i$ carries an internal reference frame $\bm{\phi}_i \in \so(3) \cong \R^3$, represented in axis-angle form. The corresponding group element $g_i = \exp(\bm{\phi}_i) \in \mathrm{SO}(3)$ acts on beliefs through a $K$-dimensional representation:
 \begin{equation}
 g \cdot \bm{\mu} = R(g)\bm{\mu}, \quad g \cdot \Sig = R(g) \Sig R(g)^\top
 \end{equation}
-where $R(g) \in \R^{K \times K}$ is constructed from $\so(3)$ generators $\{J_a\}_{a=1}^3$:
-\begin{equation}
-R(g) = \exp\left(\sum_{a=1}^3 \phi^a J_a\right), \quad [J_a, J_b] = \epsilon_{abc} J_c
-\end{equation}
+where $R(g) = \exp(\sum_a \phi^a J_a)$ is constructed from $\so(3)$ generators satisfying $[J_a, J_b] = \epsilon_{abc} J_c$.
 
-\paragraph{Parallel Transport.} To compare beliefs $q_i$ and $q_j$ residing in different gauge frames, we transport $q_j$ to agent $i$'s frame:
+To compare beliefs $q_i$ and $q_j$ residing in different frames, we parallel-transport $q_j$ into agent $i$'s frame:
 \begin{equation}
 \Omega_{ij}[q_j] = \N\left(R_{ij}\bm{\mu}_j,\, R_{ij} \Sig_j R_{ij}^\top\right)
 \label{eq:transport}
 \end{equation}
-where $R_{ij} = R(g_i) R(g_j)^{-1} = \exp(\bm{\phi}_i)\exp(-\bm{\phi}_j)$. This construction ensures gauge covariance: simultaneously rotating all frames by $g \in \mathrm{SO}(3)$ leaves the transported quantities invariant.
+where $R_{ij} = R(g_i)R(g_j)^{-1}$. This construction is gauge-covariant: simultaneously rotating all frames by $g \in \mathrm{SO}(3)$ leaves the transported quantities invariant. The gauge degrees of freedom allow agents to maintain independent coordinate systems while still communicating through parallel transport.
 
 \subsection{Variational Free Energy}
 \label{sec:free_energy}
 
-The potential energy in our Hamiltonian is the variational free energy from active inference. Following \citet{Dennis2025atten}, the complete functional is:
+The potential energy in our Hamiltonian is the variational free energy from active inference \citep{Friston2010}. Following \citet{Dennis2025atten}, the complete functional decomposes into three terms:
 \begin{equation}
-\F = \underbrace{\alpha \sum_i \KL(q_i \| p_i)}_{\text{self-coupling}} + \underbrace{\lambda_\beta \sum_{i,j} \beta_{ij} \KL(q_i \| \Omega_{ij}[q_j])}_{\text{belief alignment}} + \underbrace{\CE(\bm{W}_{\mathrm{out}}\bm{\mu}, \bm{y})}_{\text{observation}}
+\F = \underbrace{\alpha \sum_i \KL(q_i \| p_i)}_{\text{prior anchoring}} + \underbrace{\lambda_\beta \sum_{i,j} \beta_{ij} \KL(q_i \| \Omega_{ij}[q_j])}_{\text{belief alignment}} + \underbrace{\CE(\bm{W}_{\mathrm{out}}\bm{\mu}, \bm{y})}_{\text{observation likelihood}}
 \label{eq:free_energy}
 \end{equation}
-where:
-\begin{itemize}
-\item $p_i = \N(\bm{\mu}_i^{\mathrm{embed}}, \Sig_i^{\mathrm{embed}})$ are embedding priors
-\item $\beta_{ij}$ are attention weights from \Cref{eq:kl_attention}
-\item $\CE$ is cross-entropy with target tokens $\bm{y}$
-\end{itemize}
+The prior-anchoring term penalizes deviation from learned embeddings $p_i$, preventing beliefs from drifting arbitrarily during dynamics. The alignment term, weighted by attention coefficients $\beta_{ij}$, encourages beliefs to agree after parallel transport---agents that attend strongly to each other should hold compatible beliefs. The observation term $\CE$ is the cross-entropy between predicted and target tokens $\bm{y}$, grounding beliefs in the language modeling objective.
 
-The \textbf{self-coupling} term anchors evolved beliefs to their embedding priors. The \textbf{alignment} term encourages beliefs to agree after parallel transport. The \textbf{observation} term grounds beliefs in discrete token predictions.
-
-\paragraph{Symmetry Breaking.} In the absence of observations ($\CE = 0$), the free energy possesses a vacuum symmetry: all agents can simultaneously rotate their frames $\bm{\phi}_i \to \bm{\phi}_i + \bm{\phi}_0$ without changing $\F$ \citep{Dennis2025atten}. This is an epistemic analog of Goldstone's theorem in field theory. Observations break this symmetry, forcing agents to specialize based on sensory evidence. Training thus corresponds to symmetry-breaking dynamics on the gauge orbit.
+This functional exhibits a gauge symmetry: in the absence of observations, all agents can simultaneously rotate their frames $\bm{\phi}_i \to \bm{\phi}_i + \bm{\phi}_0$ without changing $\F$ \citep{Dennis2025atten}. Observations break this symmetry, forcing differentiation among agents. Training thus corresponds to symmetry-breaking dynamics on the gauge orbit---an epistemic analog of the Higgs mechanism in field theory.
 
 %=============================================================================
 \section{Architecture}
 \label{sec:architecture}
 %=============================================================================
 
+We now translate the mathematical framework into a concrete architecture. The design has two components: a gauge-theoretic attention mechanism that replaces learned query-key projections with KL divergence, and a Hamiltonian feedforward network that replaces the MLP with symplectic integration.
+
 \subsection{Gauge-Theoretic Attention}
 \label{sec:gauge_attention}
 
-Standard multi-head attention requires $4K^2$ parameters for $\bm{W}_Q, \bm{W}_K, \bm{W}_V, \bm{W}_O$ projections. Our gauge attention eliminates $\bm{W}_Q, \bm{W}_K$ entirely:
-
+Standard multi-head attention requires learned projections $\bm{W}_Q, \bm{W}_K, \bm{W}_V, \bm{W}_O$, contributing $4K^2$ parameters per head. Our gauge attention eliminates $\bm{W}_Q$ and $\bm{W}_K$ entirely by computing attention weights from information-theoretic distance:
 \begin{equation}
 \beta_{ij} = \frac{\exp\left(-\KL(q_i \| \Omega_{ij}[q_j])/\kappa\right)}{\sum_k \exp\left(-\KL(q_i \| \Omega_{ik}[q_k])/\kappa\right)}
+\label{eq:kl_attention}
 \end{equation}
+The temperature $\kappa$ controls attention sharpness, analogous to the $\sqrt{d}$ scaling in standard attention.
 
-The KL divergence between Gaussians is:
+For Gaussian beliefs, the KL divergence after parallel transport has closed form:
 \begin{equation}
 \KL(q_i \| \Omega_{ij}[q_j]) = \frac{1}{2}\left[\tr(\tilde{\Sig}_j^{-1}\Sig_i) + (\tilde{\bm{\mu}}_j - \bm{\mu}_i)^\top \tilde{\Sig}_j^{-1}(\tilde{\bm{\mu}}_j - \bm{\mu}_i) - K + \ln\frac{|\tilde{\Sig}_j|}{|\Sig_i|}\right]
 \end{equation}
-where $\tilde{\bm{\mu}}_j = R_{ij}\bm{\mu}_j$ and $\tilde{\Sig}_j = R_{ij}\Sig_j R_{ij}^\top$.
-
-Message aggregation proceeds via parallel transport:
+where $\tilde{\bm{\mu}}_j = R_{ij}\bm{\mu}_j$ and $\tilde{\Sig}_j = R_{ij}\Sig_j R_{ij}^\top$ are the transported mean and covariance. Message aggregation then proceeds via parallel transport, yielding a weighted combination of neighbor beliefs expressed in agent $i$'s frame:
 \begin{equation}
 \bm{m}_i = \sum_j \beta_{ij} \cdot \Omega_{ij}[\bm{\mu}_j] = \sum_j \beta_{ij} R_{ij} \bm{\mu}_j
 \end{equation}
@@ -305,14 +261,7 @@ This is the softmax Jacobian applied to KL gradients---a principled nonlinearity
 
 \subsection{Full Architecture}
 
-Each transformer layer consists of:
-\begin{enumerate}
-\item \textbf{KL-Attention}: Compute $\beta_{ij}$ via \Cref{eq:kl_attention}, aggregate via parallel transport
-\item \textbf{Hamiltonian FFN}: Integrate \Cref{alg:leapfrog} for $n_{\mathrm{steps}}$ iterations
-\item \textbf{Residual + LayerNorm}: Standard residual connection on $\bm{\mu}$
-\end{enumerate}
-
-The output projection maps final means to logits: $\mathrm{logits} = \bm{W}_{\mathrm{out}} \bm{\mu}$.
+Each transformer layer proceeds in three stages. First, KL-attention computes weights $\beta_{ij}$ via \Cref{eq:kl_attention} and aggregates messages through parallel transport. Second, the Hamiltonian FFN integrates \Cref{alg:leapfrog} for $n_{\mathrm{steps}}$ iterations, evolving beliefs through phase space while conserving energy. Third, a standard residual connection and layer normalization are applied to $\bm{\mu}$, stabilizing training. The output projection maps final belief means to vocabulary logits: $\mathrm{logits} = \bm{W}_{\mathrm{out}} \bm{\mu}$.
 
 %=============================================================================
 \section{Theoretical Analysis}
