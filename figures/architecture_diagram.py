@@ -234,65 +234,94 @@ def create_manifold_diagram(ax):
             color=COLORS['manifold'], style='italic')
 
     # Prior point (left side)
-    prior_x, prior_y = 2.5, 2.6
+    prior_x, prior_y = 2.0, 2.6
     ax.plot(prior_x, prior_y, 'o', color=COLORS['embedding'], markersize=14, zorder=5)
-    ax.text(prior_x - 0.8, prior_y, r'Prior $p$', ha='center', va='center', fontsize=9,
+    ax.text(prior_x, prior_y + 0.5, r'Prior $p$', ha='center', va='center', fontsize=9,
             fontweight='bold', color=COLORS['embedding'])
 
-    # Optimal posterior point (SAME endpoint for both methods)
+    # Optimal posterior point (SAME endpoint for all methods)
     post_x, post_y = 9.5, 2.6
     ax.plot(post_x, post_y, '*', color='black', markersize=18, zorder=6)
-    ax.text(post_x + 0.8, post_y, r'$q^*$', ha='left', va='center', fontsize=11,
+    ax.text(post_x + 0.7, post_y, r'$q^*$', ha='left', va='center', fontsize=11,
             fontweight='bold', color='black')
-    ax.text(post_x, post_y - 0.55, r'optimal posterior', ha='center', fontsize=8, color='gray')
 
-    # VFE gradient descent path (dashed, direct descent - no oscillation)
+    # === 1. VFE: Overdamped (direct descent, no overshoot) ===
     t_vfe = np.linspace(0, 1, 40)
     x_vfe = prior_x + (post_x - prior_x) * t_vfe
-    y_vfe = np.full_like(x_vfe, prior_y)  # Straight horizontal line (direct descent)
+    y_vfe = np.full_like(x_vfe, prior_y + 0.6)  # Offset up
     ax.plot(x_vfe, y_vfe, '--', color=COLORS['ffn_vfe'], linewidth=2.5, zorder=4)
-    ax.annotate('', xy=(post_x - 0.15, post_y),
+    ax.annotate('', xy=(post_x - 0.15, prior_y + 0.6),
                 xytext=(x_vfe[-3], y_vfe[-3]),
                 arrowprops=dict(arrowstyle='->', color=COLORS['ffn_vfe'], lw=2.5))
+    ax.text(6, prior_y + 0.9, r'overdamped ($\gamma \gg 1$)', fontsize=8,
+            color=COLORS['ffn_vfe'], ha='center', style='italic')
 
-    # Hamiltonian orbit path (solid, SPIRAL into endpoint)
-    # Use parametric spiral that converges to (post_x, post_y)
-    t_ham = np.linspace(0, 1, 150)
-    # Spiral parameters: starts at prior, spirals into posterior
-    # Radius decreases as we approach the end
-    radius = 0.9 * (1 - t_ham)**0.7  # Decreasing radius
-    angle = 6 * np.pi * t_ham  # Multiple rotations
-    # Center moves from prior to posterior
-    center_x = prior_x + (post_x - prior_x) * t_ham
-    center_y = prior_y + (post_y - prior_y) * t_ham
-    # Add spiral offset
-    x_ham = center_x + radius * np.cos(angle)
-    y_ham = center_y + radius * np.sin(angle)
-    ax.plot(x_ham, y_ham, '-', color='#AA8800', linewidth=2, zorder=4)
-    ax.annotate('', xy=(post_x, post_y - 0.1),
-                xytext=(x_ham[-5], y_ham[-5]),
+    # === 2. Hamiltonian: Spiral (slightly damped, γ ~ 1) - spirals INTO q* ===
+    # Phase 1: Approach q*
+    t_approach = np.linspace(0, 1, 40)
+    x_approach = prior_x + (post_x - prior_x - 0.6) * t_approach
+    y_approach = prior_y + 0.15 * np.sin(1.5 * np.pi * t_approach)
+
+    # Phase 2: Inward spiral around q* with DECREASING radius
+    spiral_center_x, spiral_center_y = post_x, prior_y
+    t_spiral = np.linspace(0, 3 * np.pi, 100)  # Multiple loops
+    initial_radius = 0.65
+    # Radius decreases exponentially - spirals IN to q*
+    radius = initial_radius * np.exp(-0.35 * t_spiral)
+    x_spiral = spiral_center_x + radius * np.cos(t_spiral + 0.5 * np.pi)
+    y_spiral = spiral_center_y + radius * 0.6 * np.sin(t_spiral + 0.5 * np.pi)
+
+    # Combine
+    x_full_spiral = np.concatenate([x_approach, x_spiral])
+    y_full_spiral = np.concatenate([y_approach, y_spiral])
+
+    ax.plot(x_full_spiral, y_full_spiral, '-', color='#AA8800', linewidth=2.5, zorder=4)
+    # Arrow points to the end (which is at q*)
+    ax.annotate('', xy=(x_spiral[-1], y_spiral[-1]),
+                xytext=(x_spiral[-8], y_spiral[-8]),
                 arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2))
+    ax.text(5.5, prior_y + 0.5, r'spiral in ($\gamma \sim 1$)', fontsize=8,
+            color='#AA8800', ha='center', style='italic')
 
-    # Add annotation for VFE path
-    ax.text(6, 2.95, r'VFE: $-\nabla_\mu F$', fontsize=9, color=COLORS['ffn_vfe'],
-            ha='center', style='italic')
+    # === 3. Hamiltonian: Underdamped oscillation (γ ≈ 0) - ORBITS the minimum ===
+    # Phase 1: Approach from prior to near q*
+    t_approach = np.linspace(0, 1, 30)
+    x_approach = prior_x + (post_x - prior_x - 0.8) * t_approach
+    y_approach = prior_y - 0.6 + 0.2 * np.sin(2 * np.pi * t_approach)
 
-    # Add annotation for Hamiltonian path
-    ax.text(4.5, 3.6, r'Ham: spiral in', fontsize=9, color='#AA8800',
-            ha='center', style='italic')
+    # Phase 2: Orbit around q* with CONSTANT amplitude (energy conserved)
+    orbit_radius = 0.7
+    orbit_center_x, orbit_center_y = post_x, prior_y - 0.6
+    t_orbit = np.linspace(0.15 * np.pi, 2.5 * np.pi, 100)  # Multiple orbits
+    x_orbit = orbit_center_x + orbit_radius * np.cos(t_orbit)
+    y_orbit = orbit_center_y + orbit_radius * 0.6 * np.sin(t_orbit)  # Elliptical
 
-    # Legend (repositioned)
+    # Combine approach and orbit
+    x_osc = np.concatenate([x_approach, x_orbit])
+    y_osc = np.concatenate([y_approach, y_orbit])
+
+    ax.plot(x_osc, y_osc, '-', color='#CC4444', linewidth=2.5, zorder=4)
+    # Arrow shows direction of orbit, not convergence
+    ax.annotate('', xy=(x_orbit[-1], y_orbit[-1]),
+                xytext=(x_orbit[-5], y_orbit[-5]),
+                arrowprops=dict(arrowstyle='->', color='#CC4444', lw=2))
+    ax.text(post_x, prior_y - 1.7, r'orbit ($\gamma \approx 0$)', fontsize=8,
+            color='#CC4444', ha='center', style='italic')
+
+    # Legend
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS['embedding'],
-               markersize=10, label=r'Prior $p$ (from embedding)'),
+               markersize=10, label=r'Prior $p$'),
         Line2D([0], [0], marker='*', color='w', markerfacecolor='black',
-               markersize=12, label=r'Optimal posterior $q^*$'),
+               markersize=12, label=r'Optimal $q^*$'),
         Line2D([0], [0], linestyle='--', color=COLORS['ffn_vfe'], lw=2.5,
-               label=r'VFE: gradient descent'),
+               label=r'VFE (overdamped)'),
         Line2D([0], [0], linestyle='-', color='#AA8800', lw=2.5,
-               label=r'Hamiltonian: energy-conserving'),
+               label=r'Ham (spiral)'),
+        Line2D([0], [0], linestyle='-', color='#CC4444', lw=2.5,
+               label=r'Ham (orbit)'),
     ]
-    ax.legend(handles=legend_elements, loc='upper right', fontsize=8, framealpha=0.95)
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=7, framealpha=0.95)
 
 
 def create_full_figure():
