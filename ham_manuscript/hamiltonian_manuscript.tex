@@ -559,7 +559,7 @@ Partition function $Z$ & $\sum_k \exp(-\KL_{ik}/\kappa)$ \\
 
 \paragraph{Local vs global perspective.} From the \emph{global} view, the transformer is a closed $N$-body system: $K_{\mathrm{total}} = \sum_i K_i = \text{constant}$ during the forward pass, with no energy entering or leaving. From the \emph{local} view, agent $i$ is in grand canonical contact with the reservoir of other agents $j \neq i$, exchanging ``information particles'' (probability mass, alignment) at rates set by $\beta_{ij}$.
 
-\paragraph{Negative chemical potential.} The coupling term $-\sum_{ij}\beta_{ij}\KL_{ij}$ can be written as $+\sum_{ij}\mu_{ij}\KL_{ij}$ where $\mu_{ij} = -\beta_{ij} < 0$. Divergence has \emph{negative chemical potential}---like photons ($\mu = 0$), but even more thermodynamically disfavored. The system actively expels ``divergence particles,'' driving agents toward alignment in the absence of differentiating observations.
+\paragraph{Negative chemical potential.} The coupling term $-\sum_{ij}\beta_{ij}\KL_{ij}$ can be written as $+\sum_{ij}\mu_{ij}\KL_{ij}$ where $\mu_{ij} = -\beta_{ij} < 0$. Divergence has \emph{negative chemical potential}, exhibiting bosonic statistics: like bosons that bunch into the same quantum state, agents with $\mu < 0$ tend toward alignment (shared belief state) in the absence of differentiating observations. Observations lift this degeneracy, acting as an external potential that forces differentiation---analogous to how an external field breaks Bose-Einstein condensation.
 
 \paragraph{Self-consistent chemical equilibrium.} Unlike standard grand canonical systems where $\mu$ is fixed externally, here $\beta_{ij}$ emerges self-consistently from geometry:
 \begin{equation}
