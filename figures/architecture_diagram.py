@@ -325,37 +325,29 @@ def create_manifold_diagram(ax):
 
 
 def create_full_figure():
-    """Create the complete figure with all panels."""
-    fig = plt.figure(figsize=(14, 12))
+    """Create the complete figure with architecture panels only."""
+    fig = plt.figure(figsize=(14, 7))
 
-    # Create grid with more space for bottom panel and caption
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.7], hspace=0.35, wspace=0.2,
-                          top=0.92, bottom=0.12)
+    # Simple side-by-side layout
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax2 = fig.add_subplot(1, 2, 2)
 
-    # Top row: architectures
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[0, 1])
-
-    # Bottom row: manifold visualization (spans both columns)
-    ax3 = fig.add_subplot(gs[1, :])
-
-    # Draw each panel
+    # Draw architecture panels
     create_vfe_architecture(ax1)
     create_hamiltonian_architecture(ax2)
-    create_manifold_diagram(ax3)
 
     # Main title
-    fig.suptitle('Gauge Transformer Architectures: VFE vs Hamiltonian Dynamics',
-                 fontsize=14, fontweight='bold', y=0.96)
+    fig.suptitle('Gauge Transformer Architectures',
+                 fontsize=14, fontweight='bold', y=0.98)
 
-    # Add caption with proper spacing
+    plt.tight_layout(rect=[0, 0.08, 1, 0.95])
+
+    # Add caption
     caption = (
-        "Both architectures use KL-divergence based attention with gauge-equivariant parallel transport.\n"
-        "VFE descent minimizes free energy via gradient flow. Hamiltonian dynamics conserves energy via symplectic integration.\n"
-        "The self-consistency term KL(q||p) anchors beliefs to embedding priors, enabling gradient flow to learn embeddings."
+        "Both architectures use KL-divergence attention with gauge-equivariant parallel transport.\n"
+        "VFE descent minimizes free energy via gradient flow. Hamiltonian dynamics conserves energy via symplectic integration."
     )
-    fig.text(0.5, 0.03, caption, ha='center', fontsize=9, style='italic',
-             wrap=True, color='gray')
+    fig.text(0.5, 0.02, caption, ha='center', fontsize=9, style='italic', color='gray')
 
     return fig
 
