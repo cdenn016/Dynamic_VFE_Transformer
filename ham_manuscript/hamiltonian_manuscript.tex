@@ -220,7 +220,28 @@ M_i = \underbrace{\Lambda_{p_i}}_{\text{prior precision}} + \underbrace{\Lambda_
 \label{eq:mass_matrix}
 \end{equation}
 
-where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k
+where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k$'s precision transported to agent $i$'s frame. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
+
+\paragraph{Categorical Observation Precision.} While the theoretical framework uses multivariate Gaussian observations, transformer language models predict categorical distributions over vocabulary tokens. To bridge this gap, we derive the observation precision $\Lambda_{o_i}$ from the Hessian of the cross-entropy loss with respect to beliefs.
+
+For output projection $\bm{W}_{\mathrm{out}} \in \R^{V \times K}$ and temperature $\tau$, the predicted distribution is:
+\begin{equation}
+p_v = \mathrm{softmax}\left(\frac{\bm{W}_{\mathrm{out}} \bm{\mu}}{\tau}\right)_v = \frac{\exp((\bm{w}_v^\top \bm{\mu})/\tau)}{\sum_{v'} \exp((\bm{w}_{v'}^\top \bm{\mu})/\tau)}
+\end{equation}
+
+The cross-entropy loss $\CE = -\log p_y$ (where $y$ is the target token) has Hessian:
+\begin{equation}
+\nabla^2_{\bm{\mu}} \CE = \frac{1}{\tau^2} \bm{W}_{\mathrm{out}}^\top \left(\mathrm{diag}(\bm{p}) - \bm{p}\bm{p}^\top\right) \bm{W}_{\mathrm{out}}
+\label{eq:categorical_hessian}
+\end{equation}
+
+This is the Fisher information matrix of the categorical distribution, which simplifies to:
+\begin{equation}
+\Lambda_{o_i} = \frac{1}{\tau^2} \mathrm{Cov}_p(\bm{W}_{\mathrm{out}}) = \frac{1}{\tau^2} \left[\mathbb{E}_p[\bm{w}\bm{w}^\top] - \mathbb{E}_p[\bm{w}]\mathbb{E}_p[\bm{w}]^\top\right]
+\label{eq:categorical_obs_precision}
+\end{equation}
+
+where $\bm{w} \in \R^K$ is a random vector with $P(\bm{w} = \bm{w}_v) = p_v$. This covariance-based formulation reveals a geometric interpretation: the observation precision measures how much the output projection vectors ``spread out'' under the current belief-induced distribution. High-entropy predictions (uniform $\bm{p}$) yield high observation precision, anchoring beliefs more strongly; peaked predictions reduce the effective constraint.
 
 \paragraph{Hamilton's Equations.} The equations of motion are:
 \begin{align}
@@ -549,323 +570,67 @@ The exponential map at $\Sig$ with tangent $V$ is:
 \end{equation}
 
 %=============================================================================
-\section{Hyperparameter Settings}
-\label{app:hyperparams}
+\section{Categorical Observation Precision Derivation}
+\label{app:categorical_obs}
 %=============================================================================
 
-\begin{table}[h]
-\centering
-\caption{Default hyperparameters for Hamiltonian FFN.}
-\begin{tabular}{lcc}
-\toprule
-\textbf{Parameter} & \textbf{Symbol} & \textbf{Default} \\
-\midrule
-Leapfrog timestep & $\dt$ & 0.01 \\
-Integration steps & $n_{\mathrm{steps}}$ & 10 \\
-Initial momentum scale & $\sigma_\pi$ & 0.5 \\
-Damping coefficient & $\gamma$ & 0.0 \\
-Self-coupling weight & $\alpha$ & 1.0 \\
-Alignment weight & $\lambda_\beta$ & 0.5 \\
-Attention temperature & $\kappa$ & 1.0 \\
-\bottomrule
-\end{tabular}
-\end{table}
+Here we derive the observation precision $\Lambda_o$ for categorical (softmax) outputs, bridging the Gaussian formulation in the theoretical framework to the discrete token predictions in transformer language models.
 
+\subsection{Setup}
 
+Let $\bm{W}_{\mathrm{out}} \in \R^{V \times K}$ be the output projection matrix mapping belief means $\bm{\mu} \in \R^K$ to logits over vocabulary $V$. With temperature $\tau$, the predicted distribution is:
+\begin{equation}
+p_v(\bm{\mu}) = \frac{\exp((\bm{w}_v^\top \bm{\mu})/\tau)}{\sum_{v'=1}^V \exp((\bm{w}_{v'}^\top \bm{\mu})/\tau)}
+\end{equation}
+where $\bm{w}_v^\top$ is the $v$-th row of $\bm{W}_{\mathrm{out}}$.
 
-\paragraph{Hamilton's Equations.} The equations of motion are:
+\subsection{Cross-Entropy Hessian}
+
+The cross-entropy loss for target token $y$ is:
+\begin{equation}
+\CE(\bm{\mu}) = -\log p_y(\bm{\mu})
+\end{equation}
+
+The gradient is:
+\begin{equation}
+\nabla_{\bm{\mu}} \CE = \frac{1}{\tau}(\bm{W}_{\mathrm{out}}^\top \bm{p} - \bm{w}_y) = \frac{1}{\tau}\bm{W}_{\mathrm{out}}^\top (\bm{p} - \bm{e}_y)
+\end{equation}
+where $\bm{e}_y$ is the one-hot vector for token $y$.
+
+The Hessian is:
+\begin{equation}
+\nabla^2_{\bm{\mu}} \CE = \frac{1}{\tau^2} \bm{W}_{\mathrm{out}}^\top \nabla_{\bm{\mu}} \bm{p}
+\end{equation}
+
+For the softmax, $\frac{\partial p_v}{\partial \mu_k} = \frac{1}{\tau} p_v (\delta_{vw} - p_w) W_{wk}$, giving:
+\begin{equation}
+\nabla_{\bm{\mu}} \bm{p} = \frac{1}{\tau} \left(\mathrm{diag}(\bm{p}) - \bm{p}\bm{p}^\top\right) \bm{W}_{\mathrm{out}}
+\end{equation}
+
+Therefore:
+\begin{equation}
+\Lambda_o = \nabla^2_{\bm{\mu}} \CE = \frac{1}{\tau^2} \bm{W}_{\mathrm{out}}^\top \left(\mathrm{diag}(\bm{p}) - \bm{p}\bm{p}^\top\right) \bm{W}_{\mathrm{out}}
+\end{equation}
+
+\subsection{Covariance Interpretation}
+
+The matrix $\mathrm{diag}(\bm{p}) - \bm{p}\bm{p}^\top$ is precisely the covariance matrix of a categorical random variable with probabilities $\bm{p}$. If we define a random vector $\bm{w}$ with $P(\bm{w} = \bm{w}_v) = p_v$, then:
 \begin{align}
-\dot{\bm{\mu}} &= \frac{\partial H}{\partial \pip_\mu} = \Sig_p \pip_\mu, & \dot{\pip}_\mu &= -\frac{\partial \F}{\partial \bm{\mu}} \label{eq:hamilton_mu}\\
-\dot{\Sig} &= 2\Sig \pip_\Sigma \Sig, & \dot{\pip}_\Sigma &= -\frac{\partial \F}{\partial \Sig} + \text{(curvature)} \label{eq:hamilton_sigma}\\
-\dot{\bm{\phi}} &= \pip_\phi, & \dot{\pip}_\phi &= -\frac{\partial \F}{\partial \bm{\phi}} \label{eq:hamilton_phi}
+\mathbb{E}[\bm{w}] &= \sum_v p_v \bm{w}_v = \bm{W}_{\mathrm{out}}^\top \bm{p} \\
+\mathbb{E}[\bm{w}\bm{w}^\top] &= \sum_v p_v \bm{w}_v \bm{w}_v^\top = \bm{W}_{\mathrm{out}}^\top \mathrm{diag}(\bm{p}) \bm{W}_{\mathrm{out}} \\
+\mathrm{Cov}(\bm{w}) &= \mathbb{E}[\bm{w}\bm{w}^\top] - \mathbb{E}[\bm{w}]\mathbb{E}[\bm{w}]^\top
 \end{align}
 
-\paragraph{Leapfrog Integrator.} We use the St\"{o}rmer-Verlet scheme, which is symplectic, time-reversible, and second-order accurate:
-
-\begin{algorithm}[h]
-\caption{Leapfrog Integration Step}
-\label{alg:leapfrog}
-\begin{algorithmic}[1]
-\REQUIRE State $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$, timestep $\dt$, prior $(\bm{\mu}_p, \Sig_p)$
-\STATE $\nabla \F \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
-\STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F$
-\STATE $\bm{\mu} \gets \bm{\mu} + \dt \cdot \Sig_p \pip_\mu$ \COMMENT{Full-step position}
-\STATE $\Sig \gets \Sig + \dt \cdot 2\Sig \pip_\Sigma \Sig$ \COMMENT{SPD geodesic step}
-\STATE $\nabla \F' \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
-\STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F'$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F'$
-\RETURN $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Full Architecture}
-
-Each transformer layer consists of:
-\begin{enumerate}
-\item \textbf{KL-Attention}: Compute $\beta_{ij}$ via \Cref{eq:kl_attention}, aggregate via parallel transport
-\item \textbf{Hamiltonian FFN}: Integrate \Cref{alg:leapfrog} for $n_{\mathrm{steps}}$ iterations
-\item \textbf{Residual + LayerNorm}: Standard residual connection on $\bm{\mu}$
-\end{enumerate}
-
-The output projection maps final means to logits: $\mathrm{logits} = \bm{W}_{\mathrm{out}} \bm{\mu}$.
-
-%=============================================================================
-\section{Theoretical Analysis}
-\label{sec:theory}
-%=============================================================================
-
-\begin{theorem}[Symplectic Conservation]
-\label{thm:symplectic}
-The leapfrog integrator (\Cref{alg:leapfrog}) preserves the symplectic 2-form $\omega = d\bm{q} \wedge d\bm{p}$ exactly and conserves the Hamiltonian $H$ to $\mathcal{O}(\dt^2)$ per step with no secular drift.
-\end{theorem}
-
-\begin{proof}
-The leapfrog map $\Phi_{\dt}: T^*\mathcal{M} \to T^*\mathcal{M}$ decomposes as:
+Thus:
 \begin{equation}
-\Phi_{\dt} = \Phi_{\dt/2}^V \circ \Phi_{\dt}^T \circ \Phi_{\dt/2}^V
-\end{equation}
-where $\Phi^V$ is the momentum kick (shear in $\bm{p}$) and $\Phi^T$ is the position drift (shear in $\bm{q}$). Each shear preserves the symplectic form, hence so does their composition. Energy conservation follows from backward error analysis \citep{hairer2006geometric}: the numerical trajectory exactly solves a nearby Hamiltonian $\tilde{H} = H + \mathcal{O}(\dt^2)$.
-\end{proof}
-
-\begin{theorem}[Gauge Covariance]
-\label{thm:gauge}
-The Hamiltonian $H$ is invariant under simultaneous gauge transformation of all agents:
-\begin{equation}
-g \cdot (\bm{\mu}_i, \Sig_i, \bm{\phi}_i) = (R(g)\bm{\mu}_i, R(g)\Sig_i R(g)^\top, \mathrm{Ad}_g \bm{\phi}_i)
-\end{equation}
-Consequently, dynamics preserve gauge covariance.
-\end{theorem}
-
-\begin{proof}
-The transported KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is gauge-invariant by construction: transforming all frames by $g$ leaves the relative transport $\Omega_{ij}$ unchanged. The kinetic terms $T_\mu, T_\Sigma, T_\phi$ are defined via bi-invariant metrics (Fisher-Rao, affine-invariant, Killing). Thus $H$ is gauge-invariant, and Noether's theorem implies gauge covariance is preserved.
-\end{proof}
-
-\begin{theorem}[Exact Reversibility]
-\label{thm:reversibility}
-For any trajectory $\{\bm{z}_t\}_{t=0}^T$ generated by leapfrog integration, defining the time-reversal operator $\mathcal{R}: (\bm{q}, \bm{p}) \mapsto (\bm{q}, -\bm{p})$, we have:
-\begin{equation}
-\Phi_{-\dt} = \mathcal{R} \circ \Phi_{\dt} \circ \mathcal{R}
-\end{equation}
-Hence $\bm{z}_0 = (\mathcal{R} \circ \Phi_{\dt}^T \circ \mathcal{R})(\bm{z}_T)$ exactly.
-\end{theorem}
-
-This enables \textbf{token attribution}: given output $\bm{\mu}_T$, we recover the exact input $\bm{\mu}_0$ by negating momenta and integrating backward.
-
-%=============================================================================
-\section{Experiments}
-\label{sec:experiments}
-%=============================================================================
-
-\subsection{Experimental Setup}
-
-\paragraph{Dataset.} WikiText-2 \citep{merity2016pointer} with byte-level encoding (vocabulary size 256).
-
-\paragraph{Models.} We compare:
-\begin{itemize}
-\item \textbf{Standard Transformer}: Vaswani-style with learned $\bm{W}_Q, \bm{W}_K, \bm{W}_V, \bm{W}_O$ and MLP FFN
-\item \textbf{Gauge-VFE Transformer}: KL-attention + gradient descent FFN on free energy
-\item \textbf{Gauge-Hamiltonian Transformer}: KL-attention + leapfrog FFN (this work)
-\end{itemize}
-All models parameter-matched to $\sim$[TBD] parameters.
-
-\paragraph{Training.} AdamW optimizer, [TBD] steps, batch size [TBD], sequence length [TBD].
-
-\paragraph{Metrics.} Bits-per-character (BPC), perplexity (PPL), and for Hamiltonian models: energy drift $\Delta H / H_0$ and reversal error $\|\bm{\mu}_0 - \bm{\mu}_0'\|_2 / \|\bm{\mu}_0\|_2$.
-
-\subsection{Main Results}
-
-% PLACEHOLDER TABLE - TO BE FILLED WITH RTX 5090 RESULTS
-\begin{table}[h]
-\centering
-\caption{Language modeling performance on WikiText-2 (byte-level). Results pending RTX 5090 experiments.}
-\label{tab:main_results}
-\begin{tabular}{lccccc}
-\toprule
-\textbf{Model} & \textbf{Params} & \textbf{Val PPL} & \textbf{Val BPC} & \textbf{FFN Params} \\
-\midrule
-Standard Transformer & [TBD] & [TBD] & [TBD] & $8K \cdot d_{\mathrm{ff}}$ \\
-Gauge-VFE & [TBD] & [TBD] & [TBD] & $\sim 4$ \\
-\textbf{Gauge-Hamiltonian} & [TBD] & [TBD] & [TBD] & \textbf{0} \\
-\midrule
-\multicolumn{5}{l}{\emph{Preliminary small-scale results indicate comparable performance across all three.}} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Energy Conservation}
-
-% PLACEHOLDER FIGURE
-\begin{figure}[h]
-\centering
-% \includegraphics[width=0.6\textwidth]{figures/energy_conservation.pdf}
-\fbox{\parbox{0.6\textwidth}{\centering\vspace{2cm}[Energy Conservation Plot]\\$H(t)$ over integration steps\\$\Delta H / H_0 \approx$ [TBD]\%\vspace{2cm}}}
-\caption{Hamiltonian $H(t)$ over leapfrog integration steps. Energy is conserved to [TBD]\% relative error, validating symplectic integration.}
-\label{fig:energy}
-\end{figure}
-
-\subsection{Reversibility and Token Attribution}
-
-The central interpretability result: we can trace output tokens back to their input origins via momentum reversal.
-
-\begin{table}[h]
-\centering
-\caption{Trajectory reversal accuracy. Initial state recovery after forward-backward integration.}
-\label{tab:reversibility}
-\begin{tabular}{cccc}
-\toprule
-$n_{\mathrm{steps}}$ & $\dt$ & Relative Error $\|\bm{\mu}_0 - \bm{\mu}_0'\|/\|\bm{\mu}_0\|$ \\
-\midrule
-10 & 0.01 & $\sim 10^{-7}$ \\
-20 & 0.01 & $\sim 10^{-7}$ \\
-10 & 0.02 & $\sim 10^{-6}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% THE MONEY FIGURE
-\begin{figure}[h]
-\centering
-% \includegraphics[width=\textwidth]{figures/trajectory_reversal.pdf}
-\fbox{\parbox{0.9\textwidth}{\centering\vspace{3cm}
-\textbf{[THE MONEY FIGURE]}\\[1em]
-Output token $\to$ Reverse trajectory through phase space $\to$ Input attribution\\[1em]
-Panel (a): Forward trajectory $\bm{\mu}_0 \to \bm{\mu}_T$ in projected belief space\\
-Panel (b): Reverse trajectory $\bm{\mu}_T \to \bm{\mu}_0'$ after momentum negation\\
-Panel (c): Per-token attribution weights derived from trajectory\\
-Panel (d): Overlay showing $\bm{\mu}_0 \approx \bm{\mu}_0'$ to $10^{-7}$ precision
-\vspace{3cm}}}
-\caption{\textbf{Token attribution via Hamiltonian reversal.} Given an output token's belief $\bm{\mu}_T$, we negate momenta $\pip \to -\pip$ and integrate backward, exactly recovering the input $\bm{\mu}_0$. The trajectory reveals which input features causally influenced the output---impossible with standard irreversible MLPs.}
-\label{fig:reversal}
-\end{figure}
-
-\subsection{Ablation Studies}
-
-% PLACEHOLDER
-\begin{table}[h]
-\centering
-\caption{Ablation study. Effect of Hamiltonian hyperparameters on performance.}
-\label{tab:ablation}
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Configuration} & $n_{\mathrm{steps}}$ & $\dt$ & \textbf{Val PPL} & $\Delta H / H_0$ \\
-\midrule
-Default & 10 & 0.01 & [TBD] & [TBD] \\
-More steps & 20 & 0.01 & [TBD] & [TBD] \\
-Larger $\dt$ & 10 & 0.02 & [TBD] & [TBD] \\
-With damping ($\gamma = 0.1$) & 10 & 0.01 & [TBD] & N/A \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-%=============================================================================
-\section{Discussion}
-\label{sec:discussion}
-%=============================================================================
-
-\subsection{Why Does It Work?}
-
-The Hamiltonian FFN succeeds because:
-
-\begin{enumerate}
-\item \textbf{Free energy is the correct objective.} Active inference establishes that perception corresponds to minimizing variational free energy \citep{friston2010free}. Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow.
-
-\item \textbf{Geometry encodes inductive bias.} The Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections encode priors about belief transformation that would otherwise require learning.
-
-\item \textbf{Symplectic structure preserves information.} Unlike gradient descent, which loses information through contraction, Hamiltonian flow is volume-preserving in phase space (Liouville's theorem).
-\end{enumerate}
-
-\subsection{Implications for Interpretability}
-
-Exact reversibility enables new forms of mechanistic analysis:
-
-\begin{itemize}
-\item \textbf{Token attribution}: Given any output feature, trace its complete causal history
-\item \textbf{Phase space visualization}: Understand belief evolution geometrically
-\item \textbf{Counterfactual analysis}: Perturb initial conditions and observe trajectory divergence
-\item \textbf{Information flow}: Quantify how much each input contributes to each output
-\end{itemize}
-
-This contrasts sharply with post-hoc interpretability methods (attention visualization, probing) that provide correlational rather than causal insights.
-
-\subsection{Limitations}
-
-\begin{itemize}
-\item \textbf{Computational cost}: Each FFN requires $n_{\mathrm{steps}}$ gradient computations
-\item \textbf{Hyperparameter sensitivity}: $\dt$, $n_{\mathrm{steps}}$, momentum scale require tuning
-\item \textbf{Scale}: Current experiments are small-scale; large model behavior unknown
-\item \textbf{SPD constraints}: Maintaining $\Sig \in \SPD(K)$ requires care during integration
-\end{itemize}
-
-%=============================================================================
-\section{Conclusion}
-\label{sec:conclusion}
-%=============================================================================
-
-We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Our architecture achieves:
-
-\begin{itemize}
-\item Comparable performance to learned MLPs with \textbf{zero FFN parameters}
-\item \textbf{Gauge covariance} under internal reference frame transformations
-\item \textbf{Exact reversibility} enabling mechanistic token attribution
-\item \textbf{Energy conservation} via symplectic integration
-\end{itemize}
-
-This work suggests that transformer FFN parameters---which constitute the majority of weights in large models---may be replaceable by principled dynamical systems grounded in physics and information geometry.
-
-\paragraph{Future Directions.}
-\begin{enumerate}
-\item Scale to large language models and measure compute/quality tradeoffs
-\item Extend gauge group from $\mathrm{SO}(3)$ to $\mathrm{SU}(n)$ or Lorentz group
-\item Develop reversibility-based interpretability tools for production models
-\item Combine with Hamiltonian Monte Carlo for Bayesian uncertainty quantification
-\end{enumerate}
-
-\section*{Acknowledgments}
-[To be added]
-
-\section*{Code Availability}
-Code available at [repository URL].
-
-% Bibliography
-\bibliography{references}
-
-%=============================================================================
-\appendix
-\section{$\mathrm{SO}(3)$ Generator Construction}
-\label{app:generators}
-%=============================================================================
-
-For embedding dimension $K$, we construct $\so(3)$ generators $\{J_1, J_2, J_3\}$ as $K \times K$ matrices satisfying the Lie algebra:
-\begin{equation}
-[J_a, J_b] = \epsilon_{abc} J_c
+\Lambda_o = \frac{1}{\tau^2} \mathrm{Cov}_p(\bm{W}_{\mathrm{out}})
 \end{equation}
 
-For $K \geq 3$, we decompose into irreducible representations (irreps). The standard spin-$j$ irrep has dimension $2j+1$. We tile irreps to fill dimension $K$:
-\begin{equation}
-K = \sum_{\ell} n_\ell (2\ell + 1)
-\end{equation}
-where $n_\ell$ is the multiplicity of spin-$\ell$ irrep.
+This reveals that the observation precision measures the ``spread'' of output embedding vectors under the current belief-induced distribution. Uniform predictions maximize this covariance (and hence precision), while peaked predictions reduce it.
 
-%=============================================================================
-\section{SPD Manifold Geometry}
-\label{app:spd}
-%=============================================================================
+\subsection{Connection to Fisher Information}
 
-The space $\SPD(K)$ of symmetric positive-definite matrices is a Riemannian manifold with the affine-invariant metric:
-\begin{equation}
-\langle V, W \rangle_\Sigma = \tr(\Sigma^{-1} V \Sigma^{-1} W)
-\end{equation}
-
-The geodesic from $\Sig_0$ to $\Sig_1$ is:
-\begin{equation}
-\Sig(t) = \Sig_0^{1/2} \left(\Sig_0^{-1/2} \Sig_1 \Sig_0^{-1/2}\right)^t \Sig_0^{1/2}
-\end{equation}
-
-The exponential map at $\Sig$ with tangent $V$ is:
-\begin{equation}
-\exp_\Sigma(V) = \Sig^{1/2} \exp\left(\Sig^{-1/2} V \Sig^{-1/2}\right) \Sig^{1/2}
-\end{equation}
+This Hessian is exactly the Fisher information matrix of the categorical distribution with respect to the natural parameters (logits). The observation precision thus has the same information-geometric interpretation as the prior and social precisions: it quantifies the curvature of the loss landscape with respect to belief perturbations.
 
 %=============================================================================
 \section{Hyperparameter Settings}
@@ -886,326 +651,7 @@ Damping coefficient & $\gamma$ & 0.0 \\
 Self-coupling weight & $\alpha$ & 1.0 \\
 Alignment weight & $\lambda_\beta$ & 0.5 \\
 Attention temperature & $\kappa$ & 1.0 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\end{document}
-s frame. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
-
-\paragraph{Hamilton's Equations.} The equations of motion are:
-\begin{align}
-\dot{\bm{\mu}} &= \frac{\partial H}{\partial \pip_\mu} = \Sig_p \pip_\mu, & \dot{\pip}_\mu &= -\frac{\partial \F}{\partial \bm{\mu}} \label{eq:hamilton_mu}\\
-\dot{\Sig} &= 2\Sig \pip_\Sigma \Sig, & \dot{\pip}_\Sigma &= -\frac{\partial \F}{\partial \Sig} + \text{(curvature)} \label{eq:hamilton_sigma}\\
-\dot{\bm{\phi}} &= \pip_\phi, & \dot{\pip}_\phi &= -\frac{\partial \F}{\partial \bm{\phi}} \label{eq:hamilton_phi}
-\end{align}
-
-\paragraph{Leapfrog Integrator.} We use the St\"{o}rmer-Verlet scheme, which is symplectic, time-reversible, and second-order accurate:
-
-\begin{algorithm}[h]
-\caption{Leapfrog Integration Step}
-\label{alg:leapfrog}
-\begin{algorithmic}[1]
-\REQUIRE State $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$, timestep $\dt$, prior $(\bm{\mu}_p, \Sig_p)$
-\STATE $\nabla \F \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
-\STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F$
-\STATE $\bm{\mu} \gets \bm{\mu} + \dt \cdot \Sig_p \pip_\mu$ \COMMENT{Full-step position}
-\STATE $\Sig \gets \Sig + \dt \cdot 2\Sig \pip_\Sigma \Sig$ \COMMENT{SPD geodesic step}
-\STATE $\nabla \F' \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
-\STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F'$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F'$
-\RETURN $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Full Architecture}
-
-Each transformer layer consists of:
-\begin{enumerate}
-\item \textbf{KL-Attention}: Compute $\beta_{ij}$ via \Cref{eq:kl_attention}, aggregate via parallel transport
-\item \textbf{Hamiltonian FFN}: Integrate \Cref{alg:leapfrog} for $n_{\mathrm{steps}}$ iterations
-\item \textbf{Residual + LayerNorm}: Standard residual connection on $\bm{\mu}$
-\end{enumerate}
-
-The output projection maps final means to logits: $\mathrm{logits} = \bm{W}_{\mathrm{out}} \bm{\mu}$.
-
-%=============================================================================
-\section{Theoretical Analysis}
-\label{sec:theory}
-%=============================================================================
-
-\begin{theorem}[Symplectic Conservation]
-\label{thm:symplectic}
-The leapfrog integrator (\Cref{alg:leapfrog}) preserves the symplectic 2-form $\omega = d\bm{q} \wedge d\bm{p}$ exactly and conserves the Hamiltonian $H$ to $\mathcal{O}(\dt^2)$ per step with no secular drift.
-\end{theorem}
-
-\begin{proof}
-The leapfrog map $\Phi_{\dt}: T^*\mathcal{M} \to T^*\mathcal{M}$ decomposes as:
-\begin{equation}
-\Phi_{\dt} = \Phi_{\dt/2}^V \circ \Phi_{\dt}^T \circ \Phi_{\dt/2}^V
-\end{equation}
-where $\Phi^V$ is the momentum kick (shear in $\bm{p}$) and $\Phi^T$ is the position drift (shear in $\bm{q}$). Each shear preserves the symplectic form, hence so does their composition. Energy conservation follows from backward error analysis \citep{hairer2006geometric}: the numerical trajectory exactly solves a nearby Hamiltonian $\tilde{H} = H + \mathcal{O}(\dt^2)$.
-\end{proof}
-
-\begin{theorem}[Gauge Covariance]
-\label{thm:gauge}
-The Hamiltonian $H$ is invariant under simultaneous gauge transformation of all agents:
-\begin{equation}
-g \cdot (\bm{\mu}_i, \Sig_i, \bm{\phi}_i) = (R(g)\bm{\mu}_i, R(g)\Sig_i R(g)^\top, \mathrm{Ad}_g \bm{\phi}_i)
-\end{equation}
-Consequently, dynamics preserve gauge covariance.
-\end{theorem}
-
-\begin{proof}
-The transported KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is gauge-invariant by construction: transforming all frames by $g$ leaves the relative transport $\Omega_{ij}$ unchanged. The kinetic terms $T_\mu, T_\Sigma, T_\phi$ are defined via bi-invariant metrics (Fisher-Rao, affine-invariant, Killing). Thus $H$ is gauge-invariant, and Noether's theorem implies gauge covariance is preserved.
-\end{proof}
-
-\begin{theorem}[Exact Reversibility]
-\label{thm:reversibility}
-For any trajectory $\{\bm{z}_t\}_{t=0}^T$ generated by leapfrog integration, defining the time-reversal operator $\mathcal{R}: (\bm{q}, \bm{p}) \mapsto (\bm{q}, -\bm{p})$, we have:
-\begin{equation}
-\Phi_{-\dt} = \mathcal{R} \circ \Phi_{\dt} \circ \mathcal{R}
-\end{equation}
-Hence $\bm{z}_0 = (\mathcal{R} \circ \Phi_{\dt}^T \circ \mathcal{R})(\bm{z}_T)$ exactly.
-\end{theorem}
-
-This enables \textbf{token attribution}: given output $\bm{\mu}_T$, we recover the exact input $\bm{\mu}_0$ by negating momenta and integrating backward.
-
-%=============================================================================
-\section{Experiments}
-\label{sec:experiments}
-%=============================================================================
-
-\subsection{Experimental Setup}
-
-\paragraph{Dataset.} WikiText-2 \citep{merity2016pointer} with byte-level encoding (vocabulary size 256).
-
-\paragraph{Models.} We compare:
-\begin{itemize}
-\item \textbf{Standard Transformer}: Vaswani-style with learned $\bm{W}_Q, \bm{W}_K, \bm{W}_V, \bm{W}_O$ and MLP FFN
-\item \textbf{Gauge-VFE Transformer}: KL-attention + gradient descent FFN on free energy
-\item \textbf{Gauge-Hamiltonian Transformer}: KL-attention + leapfrog FFN (this work)
-\end{itemize}
-All models parameter-matched to $\sim$[TBD] parameters.
-
-\paragraph{Training.} AdamW optimizer, [TBD] steps, batch size [TBD], sequence length [TBD].
-
-\paragraph{Metrics.} Bits-per-character (BPC), perplexity (PPL), and for Hamiltonian models: energy drift $\Delta H / H_0$ and reversal error $\|\bm{\mu}_0 - \bm{\mu}_0'\|_2 / \|\bm{\mu}_0\|_2$.
-
-\subsection{Main Results}
-
-% PLACEHOLDER TABLE - TO BE FILLED WITH RTX 5090 RESULTS
-\begin{table}[h]
-\centering
-\caption{Language modeling performance on WikiText-2 (byte-level). Results pending RTX 5090 experiments.}
-\label{tab:main_results}
-\begin{tabular}{lccccc}
-\toprule
-\textbf{Model} & \textbf{Params} & \textbf{Val PPL} & \textbf{Val BPC} & \textbf{FFN Params} \\
-\midrule
-Standard Transformer & [TBD] & [TBD] & [TBD] & $8K \cdot d_{\mathrm{ff}}$ \\
-Gauge-VFE & [TBD] & [TBD] & [TBD] & $\sim 4$ \\
-\textbf{Gauge-Hamiltonian} & [TBD] & [TBD] & [TBD] & \textbf{0} \\
-\midrule
-\multicolumn{5}{l}{\emph{Preliminary small-scale results indicate comparable performance across all three.}} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Energy Conservation}
-
-% PLACEHOLDER FIGURE
-\begin{figure}[h]
-\centering
-% \includegraphics[width=0.6\textwidth]{figures/energy_conservation.pdf}
-\fbox{\parbox{0.6\textwidth}{\centering\vspace{2cm}[Energy Conservation Plot]\\$H(t)$ over integration steps\\$\Delta H / H_0 \approx$ [TBD]\%\vspace{2cm}}}
-\caption{Hamiltonian $H(t)$ over leapfrog integration steps. Energy is conserved to [TBD]\% relative error, validating symplectic integration.}
-\label{fig:energy}
-\end{figure}
-
-\subsection{Reversibility and Token Attribution}
-
-The central interpretability result: we can trace output tokens back to their input origins via momentum reversal.
-
-\begin{table}[h]
-\centering
-\caption{Trajectory reversal accuracy. Initial state recovery after forward-backward integration.}
-\label{tab:reversibility}
-\begin{tabular}{cccc}
-\toprule
-$n_{\mathrm{steps}}$ & $\dt$ & Relative Error $\|\bm{\mu}_0 - \bm{\mu}_0'\|/\|\bm{\mu}_0\|$ \\
-\midrule
-10 & 0.01 & $\sim 10^{-7}$ \\
-20 & 0.01 & $\sim 10^{-7}$ \\
-10 & 0.02 & $\sim 10^{-6}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% THE MONEY FIGURE
-\begin{figure}[h]
-\centering
-% \includegraphics[width=\textwidth]{figures/trajectory_reversal.pdf}
-\fbox{\parbox{0.9\textwidth}{\centering\vspace{3cm}
-\textbf{[THE MONEY FIGURE]}\\[1em]
-Output token $\to$ Reverse trajectory through phase space $\to$ Input attribution\\[1em]
-Panel (a): Forward trajectory $\bm{\mu}_0 \to \bm{\mu}_T$ in projected belief space\\
-Panel (b): Reverse trajectory $\bm{\mu}_T \to \bm{\mu}_0'$ after momentum negation\\
-Panel (c): Per-token attribution weights derived from trajectory\\
-Panel (d): Overlay showing $\bm{\mu}_0 \approx \bm{\mu}_0'$ to $10^{-7}$ precision
-\vspace{3cm}}}
-\caption{\textbf{Token attribution via Hamiltonian reversal.} Given an output token's belief $\bm{\mu}_T$, we negate momenta $\pip \to -\pip$ and integrate backward, exactly recovering the input $\bm{\mu}_0$. The trajectory reveals which input features causally influenced the output---impossible with standard irreversible MLPs.}
-\label{fig:reversal}
-\end{figure}
-
-\subsection{Ablation Studies}
-
-% PLACEHOLDER
-\begin{table}[h]
-\centering
-\caption{Ablation study. Effect of Hamiltonian hyperparameters on performance.}
-\label{tab:ablation}
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Configuration} & $n_{\mathrm{steps}}$ & $\dt$ & \textbf{Val PPL} & $\Delta H / H_0$ \\
-\midrule
-Default & 10 & 0.01 & [TBD] & [TBD] \\
-More steps & 20 & 0.01 & [TBD] & [TBD] \\
-Larger $\dt$ & 10 & 0.02 & [TBD] & [TBD] \\
-With damping ($\gamma = 0.1$) & 10 & 0.01 & [TBD] & N/A \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-%=============================================================================
-\section{Discussion}
-\label{sec:discussion}
-%=============================================================================
-
-\subsection{Why Does It Work?}
-
-The Hamiltonian FFN succeeds because:
-
-\begin{enumerate}
-\item \textbf{Free energy is the correct objective.} Active inference establishes that perception corresponds to minimizing variational free energy \citep{friston2010free}. Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow.
-
-\item \textbf{Geometry encodes inductive bias.} The Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections encode priors about belief transformation that would otherwise require learning.
-
-\item \textbf{Symplectic structure preserves information.} Unlike gradient descent, which loses information through contraction, Hamiltonian flow is volume-preserving in phase space (Liouville's theorem).
-\end{enumerate}
-
-\subsection{Implications for Interpretability}
-
-Exact reversibility enables new forms of mechanistic analysis:
-
-\begin{itemize}
-\item \textbf{Token attribution}: Given any output feature, trace its complete causal history
-\item \textbf{Phase space visualization}: Understand belief evolution geometrically
-\item \textbf{Counterfactual analysis}: Perturb initial conditions and observe trajectory divergence
-\item \textbf{Information flow}: Quantify how much each input contributes to each output
-\end{itemize}
-
-This contrasts sharply with post-hoc interpretability methods (attention visualization, probing) that provide correlational rather than causal insights.
-
-\subsection{Limitations}
-
-\begin{itemize}
-\item \textbf{Computational cost}: Each FFN requires $n_{\mathrm{steps}}$ gradient computations
-\item \textbf{Hyperparameter sensitivity}: $\dt$, $n_{\mathrm{steps}}$, momentum scale require tuning
-\item \textbf{Scale}: Current experiments are small-scale; large model behavior unknown
-\item \textbf{SPD constraints}: Maintaining $\Sig \in \SPD(K)$ requires care during integration
-\end{itemize}
-
-%=============================================================================
-\section{Conclusion}
-\label{sec:conclusion}
-%=============================================================================
-
-We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Our architecture achieves:
-
-\begin{itemize}
-\item Comparable performance to learned MLPs with \textbf{zero FFN parameters}
-\item \textbf{Gauge covariance} under internal reference frame transformations
-\item \textbf{Exact reversibility} enabling mechanistic token attribution
-\item \textbf{Energy conservation} via symplectic integration
-\end{itemize}
-
-This work suggests that transformer FFN parameters---which constitute the majority of weights in large models---may be replaceable by principled dynamical systems grounded in physics and information geometry.
-
-\paragraph{Future Directions.}
-\begin{enumerate}
-\item Scale to large language models and measure compute/quality tradeoffs
-\item Extend gauge group from $\mathrm{SO}(3)$ to $\mathrm{SU}(n)$ or Lorentz group
-\item Develop reversibility-based interpretability tools for production models
-\item Combine with Hamiltonian Monte Carlo for Bayesian uncertainty quantification
-\end{enumerate}
-
-\section*{Acknowledgments}
-[To be added]
-
-\section*{Code Availability}
-Code available at [repository URL].
-
-% Bibliography
-\bibliography{references}
-
-%=============================================================================
-\appendix
-\section{$\mathrm{SO}(3)$ Generator Construction}
-\label{app:generators}
-%=============================================================================
-
-For embedding dimension $K$, we construct $\so(3)$ generators $\{J_1, J_2, J_3\}$ as $K \times K$ matrices satisfying the Lie algebra:
-\begin{equation}
-[J_a, J_b] = \epsilon_{abc} J_c
-\end{equation}
-
-For $K \geq 3$, we decompose into irreducible representations (irreps). The standard spin-$j$ irrep has dimension $2j+1$. We tile irreps to fill dimension $K$:
-\begin{equation}
-K = \sum_{\ell} n_\ell (2\ell + 1)
-\end{equation}
-where $n_\ell$ is the multiplicity of spin-$\ell$ irrep.
-
-%=============================================================================
-\section{SPD Manifold Geometry}
-\label{app:spd}
-%=============================================================================
-
-The space $\SPD(K)$ of symmetric positive-definite matrices is a Riemannian manifold with the affine-invariant metric:
-\begin{equation}
-\langle V, W \rangle_\Sigma = \tr(\Sigma^{-1} V \Sigma^{-1} W)
-\end{equation}
-
-The geodesic from $\Sig_0$ to $\Sig_1$ is:
-\begin{equation}
-\Sig(t) = \Sig_0^{1/2} \left(\Sig_0^{-1/2} \Sig_1 \Sig_0^{-1/2}\right)^t \Sig_0^{1/2}
-\end{equation}
-
-The exponential map at $\Sig$ with tangent $V$ is:
-\begin{equation}
-\exp_\Sigma(V) = \Sig^{1/2} \exp\left(\Sig^{-1/2} V \Sig^{-1/2}\right) \Sig^{1/2}
-\end{equation}
-
-%=============================================================================
-\section{Hyperparameter Settings}
-\label{app:hyperparams}
-%=============================================================================
-
-\begin{table}[h]
-\centering
-\caption{Default hyperparameters for Hamiltonian FFN.}
-\begin{tabular}{lcc}
-\toprule
-\textbf{Parameter} & \textbf{Symbol} & \textbf{Default} \\
-\midrule
-Leapfrog timestep & $\dt$ & 0.01 \\
-Integration steps & $n_{\mathrm{steps}}$ & 10 \\
-Initial momentum scale & $\sigma_\pi$ & 0.5 \\
-Damping coefficient & $\gamma$ & 0.0 \\
-Self-coupling weight & $\alpha$ & 1.0 \\
-Alignment weight & $\lambda_\beta$ & 0.5 \\
-Attention temperature & $\kappa$ & 1.0 \\
+Observation temperature & $\tau$ & 1.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
