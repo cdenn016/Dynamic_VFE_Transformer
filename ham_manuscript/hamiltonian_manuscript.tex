@@ -473,6 +473,14 @@ where $\gamma_i > 0$ is a damping coefficient. This equation predicts three dyna
 
 Our pure Hamiltonian implementation ($\gamma = 0$) operates in the underdamped limit, where beliefs oscillate around the free energy minimum. This may seem undesirable for convergence, but provides two benefits: (1) exact reversibility for interpretability, and (2) exploration of the energy landscape beyond local minima.
 
+\subsection{The Pendulum Analogy}
+
+The Hamiltonian FFN is best understood as a \textbf{pendulum swinging in a bowl shaped by learned embeddings}. A frictionless pendulum released from angle $\theta_0$ conserves total energy $H = T + V$, oscillating forever without converging to rest. The Hamiltonian FFN operates identically: beliefs $\bm{\mu}_q$ orbit the free energy minimum rather than settling there.
+
+The key insight is \textbf{stroboscopic readout}: we don't wait for convergence---we photograph the pendulum at $n_{\mathrm{steps}}$ and use that position. Training doesn't teach the pendulum to swing differently; it \emph{reshapes the gravity well} (the free energy landscape $\F$) so that the orbit at step $n$ produces correct predictions.
+
+This explains why gradient descent (the $\gamma \to \infty$ limit) is irreversible: it's an overdamped pendulum that dissipates all kinetic information. Running the movie backward shows spontaneous rising---thermodynamically forbidden. The Hamiltonian FFN, being undamped, looks valid in both directions. See \Cref{app:pendulum} for the complete analogy.
+
 \subsection{Implications for Interpretability}
 
 Exact reversibility enables new forms of mechanistic analysis:
@@ -664,5 +672,91 @@ Observation temperature & $\tau$ & 1.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+%=============================================================================
+\section{The Pendulum Analogy}
+\label{app:pendulum}
+%=============================================================================
+
+The Hamiltonian FFN admits a precise mechanical analogy that clarifies its operation.
+
+\subsection{A Simple Pendulum}
+
+A frictionless pendulum released from angle $\theta_0$ has:
+\begin{align}
+\text{Potential:} \quad V(\theta) &= mgL(1 - \cos\theta) \\
+\text{Kinetic:} \quad T &= \tfrac{1}{2}mL^2\dot{\theta}^2 \\
+\text{Total:} \quad H &= T + V = \text{constant}
+\end{align}
+
+The pendulum swings forever, energy sloshing between kinetic and potential forms. It never converges to equilibrium ($\theta = 0$) without friction.
+
+\subsection{The Hamiltonian FFN as Pendulum}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Pendulum} & \textbf{Hamiltonian FFN} & \textbf{Interpretation} \\
+\midrule
+Angle $\theta$ & Belief $\bm{\mu}_q$ & Position in state space \\
+Angular momentum $p$ & Momentum $\pip_\mu$ & Rate of belief change \\
+Gravity well $V(\theta)$ & Free energy $\F(\bm{\mu})$ & Energy landscape \\
+Mass $m$ & Precision $\Lambda = \Sig^{-1}$ & Resistance to change \\
+Friction $\gamma$ & Damping (set to 0) & Information dissipation \\
+Period $T$ & $n_{\mathrm{steps}} \times \dt$ & Integration horizon \\
+Clock readout & Token prediction & Output at fixed time \\
+Run film backward & Negate $\pip$, integrate & Exact state recovery \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Stroboscopic Readout}
+
+The critical insight: \textbf{we don't wait for convergence}. Imagine photographing a swinging pendulum with a strobe light at fixed intervals. Different initial conditions yield different positions at the flash.
+
+The Hamiltonian FFN works identically:
+\begin{verbatim}
+for step in range(n_steps):    # strobe flashes
+    state = leapfrog(state)
+return state.mu_q               # photograph at final flash
+\end{verbatim}
+
+The output is wherever the belief IS after $n_{\mathrm{steps}}$---mid-swing, not at rest.
+
+\subsection{What Training Does}
+
+Training \textbf{shapes the bowl}. By adjusting embeddings $(\bm{\mu}_p, \Sig_p)$, we sculpt the free energy landscape $\F$ so that:
+\begin{enumerate}
+\item Input beliefs start at specific positions (determined by token embeddings)
+\item Trajectories evolve for exactly $n_{\mathrm{steps}}$
+\item Final positions (mid-orbit!) produce correct next-token predictions
+\end{enumerate}
+
+Training doesn't teach the pendulum to swing differently. It reshapes the gravity well.
+
+\subsection{Why Gradient Descent Is Irreversible}
+
+Gradient descent is an \textbf{overdamped pendulum} ($\gamma \to \infty$):
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Method} & \textbf{Equation} & \textbf{Behavior} \\
+\midrule
+Gradient descent & $\dot{\bm{\mu}} = -\nabla\F$ & Crawls downhill, forgets path \\
+Damped Hamiltonian & $M\ddot{\bm{\mu}} + \gamma\dot{\bm{\mu}} + \nabla\F = 0$ & Spirals to rest \\
+Pure Hamiltonian & $M\ddot{\bm{\mu}} + \nabla\F = 0$ & Orbits forever, reversible \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+An overdamped pendulum filmed and reversed shows spontaneous rising from rest---thermodynamically forbidden. A frictionless pendulum reversed looks physically valid. This is why Hamiltonian FFN achieves $10^{-7}$ reversal error while gradient descent cannot be reversed at all.
+
+\subsection{Mass = Precision}
+
+From \citet{dennis2025inertia}: a heavy pendulum (large $m$) swings slowly, resists deflection, stores more momentum. A high-precision belief (large $\Lambda = \Sig^{-1}$) changes slowly, resists evidence, carries more epistemic momentum. \textbf{Confident beliefs are heavy pendulums.}
+
+\subsection{One Sentence Summary}
+
+\emph{The Hamiltonian FFN is a pendulum swinging in a bowl shaped by learned embeddings, read out mid-swing, whose movie can be played backward exactly.}
 
 \end{document}
