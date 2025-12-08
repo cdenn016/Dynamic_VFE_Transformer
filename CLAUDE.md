@@ -132,15 +132,17 @@ This is the **Hessian of cross-entropy** with respect to μ:
 
 Standard transformer: GELU(x) — ad hoc, nobody knows why it works
 
-Ours: ∂β_{ij}/∂μ_i — emerges from differentiating softmax attention:
+Ours: ∂β_{ij}/∂θ — emerges from differentiating softmax attention:
 
 ```
 β_{ij} = softmax(-KL_{ij} / κ)
 
 ∂β_{ij}/∂μ_i = β_{ij} · [∂KL_{ij}/∂μ_i - Σ_k β_{ik} · ∂KL_{ik}/∂μ_i] / κ
+∂β_{ij}/∂Σ_i = β_{ij} · [∂KL_{ij}/∂Σ_i - Σ_k β_{ik} · ∂KL_{ik}/∂Σ_i] / κ
+∂β_{ij}/∂φ_i = β_{ij} · [∂KL_{ij}/∂φ_i - Σ_k β_{ik} · ∂KL_{ik}/∂φ_i] / κ
 ```
 
-The nonlinearity IS agents adjusting attention as beliefs change.
+**Implementation detail**: In Hamiltonian FFN, β is computed once in the attention layer and held **fixed** during leapfrog integration (like standard transformers). The ∂β/∂θ nonlinearity affects **training gradients** (backprop through attention), not forward dynamics. This separates "what to attend to" (attention layer) from "how beliefs evolve" (FFN dynamics).
 
 ### Reversibility Scope
 

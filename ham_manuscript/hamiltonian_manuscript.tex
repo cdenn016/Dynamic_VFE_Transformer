@@ -243,12 +243,14 @@ This is the Fisher information matrix of the categorical distribution, which sim
 
 where $\bm{w} \in \R^K$ is a random vector with $P(\bm{w} = \bm{w}_v) = p_v$. This covariance-based formulation reveals a geometric interpretation: the observation precision measures how much the output projection vectors ``spread out'' under the current belief-induced distribution. High-entropy predictions (uniform $\bm{p}$) yield high observation precision, anchoring beliefs more strongly; peaked predictions reduce the effective constraint.
 
-\paragraph{Emergent Nonlinearity.} Standard transformers use ad-hoc nonlinearities like GELU or ReLU in the FFN. In our framework, the nonlinearity emerges naturally from differentiating the softmax attention weights. The force on beliefs includes:
+\paragraph{Emergent Nonlinearity.} Standard transformers use ad-hoc nonlinearities like GELU or ReLU in the FFN. In our framework, the nonlinearity emerges naturally from differentiating the softmax attention weights during backpropagation. The gradient of the free energy with respect to beliefs includes:
 \begin{equation}
 \frac{\partial \beta_{ij}}{\partial \bm{\mu}_i} = \frac{\beta_{ij}}{\kappa}\left[\frac{\partial \KL_{ij}}{\partial \bm{\mu}_i} - \sum_k \beta_{ik} \frac{\partial \KL_{ik}}{\partial \bm{\mu}_i}\right]
 \label{eq:nonlinearity}
 \end{equation}
-This is the softmax Jacobian applied to KL gradients---a principled nonlinearity that emerges from attention dynamics rather than being imposed. Physical interpretation: as beliefs $\bm{\mu}_i$ change, attention weights $\beta_{ij}$ redistribute, creating feedback that depends on the current attention pattern. This is the mechanism by which ``agents adjust attention as beliefs change.''
+This is the softmax Jacobian applied to KL gradients---a principled nonlinearity that emerges from attention dynamics rather than being imposed. Analogous terms $\partial\beta_{ij}/\partial\Sig_i$ and $\partial\beta_{ij}/\partial\bm{\phi}_i$ arise from KL dependence on covariance and gauge frame.
+
+\textbf{Implementation note:} Following standard transformer architecture, our Hamiltonian FFN holds attention weights $\beta_{ij}$ \emph{fixed} during integration---computed once in the attention layer, then used as constants in the FFN. The $\partial\beta/\partial\bm{\mu}$ nonlinearity therefore affects \emph{training gradients} (backpropagation through the attention layer) rather than the forward dynamics. This separation mirrors how standard transformers compute attention once per layer before applying the FFN.
 
 \paragraph{Hamilton's Equations.} The equations of motion are:
 \begin{align}
