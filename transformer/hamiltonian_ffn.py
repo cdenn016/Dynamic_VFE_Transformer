@@ -251,13 +251,75 @@ class InertiaOfBeliefMass(nn.Module):
 
         return Lambda_transported
 
+    def compute_categorical_observation_precision(
+        self,
+        mu: torch.Tensor,         # (B, N, K) - belief means
+        W_out: torch.Tensor,      # (V, K) - output projection
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Compute observation precision for categorical output distribution.
+
+        For a transformer with softmax output p = softmax(W_out @ μ / τ),
+        the observation precision in belief space is the Hessian of the
+        negative log-likelihood:
+
+            Λ_o = ∇²_μ CE = (1/τ²) W^T (diag(p) - pp^T) W
+
+        This simplifies to the covariance of output embeddings weighted
+        by predicted probabilities:
+
+            Λ_o = (1/τ²) Cov_p(W) = (1/τ²) [E_p[ww^T] - E_p[w]E_p[w]^T]
+
+        Physical interpretation:
+            - When p is peaked (confident): Λ_o has low rank, weak constraint
+            - When p is uniform (uncertain): Λ_o reflects full embedding structure
+            - Temperature τ scales the precision (lower τ → higher precision)
+
+        Args:
+            mu: Belief means (B, N, K)
+            W_out: Output projection matrix (V, K)
+            temperature: Softmax temperature
+
+        Returns:
+            Lambda_o: (B, N, K, K) observation precision in belief space
+        """
+        B, N, K = mu.shape
+        V = W_out.shape[0]
+
+        # Compute logits and softmax probabilities
+        logits = torch.einsum('bnk,vk->bnv', mu, W_out) / temperature  # (B, N, V)
+        p = F.softmax(logits, dim=-1)  # (B, N, V)
+
+        # E_p[w] = Σ_v p_v w_v  (mean embedding under predicted distribution)
+        mean_w = torch.einsum('bnv,vk->bnk', p, W_out)  # (B, N, K)
+
+        # E_p[ww^T] = Σ_v p_v w_v w_v^T  (second moment)
+        # Efficient: einsum('bnv,vk,vl->bnkl', p, W_out, W_out)
+        second_moment = torch.einsum('bnv,vk,vl->bnkl', p, W_out, W_out)  # (B, N, K, K)
+
+        # Cov_p(W) = E_p[ww^T] - E_p[w]E_p[w]^T
+        outer_mean = torch.einsum('bnk,bnl->bnkl', mean_w, mean_w)  # (B, N, K, K)
+        Lambda_o = (second_moment - outer_mean) / (temperature ** 2)
+
+        # Symmetrize for numerical stability
+        Lambda_o = 0.5 * (Lambda_o + Lambda_o.transpose(-1, -2))
+
+        # Ensure positive semi-definiteness with small regularization
+        Lambda_o = Lambda_o + self.config.eps * torch.eye(K, device=mu.device, dtype=mu.dtype)
+
+        return Lambda_o
+
     def compute_mass(
         self,
         Sigma_prior: torch.Tensor,   # (B, N, K, K) - prior covariance
         Sigma_q: torch.Tensor,       # (B, N, K, K) - posterior covariance
         phi: torch.Tensor,           # (B, N, 3) - gauge field
         beta: Optional[torch.Tensor] = None,  # (B, N, N) or (B, n_heads, N, N) - attention weights
-        Sigma_obs: Optional[torch.Tensor] = None,  # (B, N, K, K) - observation covariance
+        Sigma_obs: Optional[torch.Tensor] = None,  # (B, N, K, K) - observation covariance (Gaussian)
+        mu: Optional[torch.Tensor] = None,    # (B, N, K) - belief means (for categorical Λ_o)
+        W_out: Optional[torch.Tensor] = None,  # (V, K) - output projection (for categorical Λ_o)
+        obs_temperature: float = 1.0,          # Softmax temperature for categorical Λ_o
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute the complete mass matrix M and its inverse M⁻¹.
@@ -269,7 +331,16 @@ class InertiaOfBeliefMass(nn.Module):
             Sigma_q: Posterior covariance (for Λ_q = Σ_q⁻¹)
             phi: Gauge field for transport
             beta: Attention weights - can be (B, N, N) or (B, n_heads, N, N)
-            Sigma_obs: Observation covariance (for Λ_o = Σ_o⁻¹)
+            Sigma_obs: Observation covariance for Gaussian likelihood (Λ_o = Σ_o⁻¹)
+            mu: Belief means for categorical observation precision
+            W_out: Output projection for categorical observation precision
+            obs_temperature: Softmax temperature for categorical Λ_o
+
+        Observation Precision (Λ_o):
+            - If Sigma_obs provided: Λ_o = Σ_obs⁻¹ (Gaussian observation model)
+            - If mu and W_out provided: Λ_o = Cov_p(W) (Categorical/softmax model)
+              where p = softmax(W_out @ μ / τ) and Cov_p(W) is the covariance
+              of output embeddings under the predicted distribution.
 
         Returns:
             M: (B, N, K, K) mass matrix
@@ -298,12 +369,25 @@ class InertiaOfBeliefMass(nn.Module):
             M = M + Lambda_p
 
         # =====================================================================
-        # 2. Observation precision: Λ_o = Σ_o⁻¹
+        # 2. Observation precision: Λ_o
+        # Two modes:
+        #   - Gaussian: Λ_o = Σ_o⁻¹ (requires Sigma_obs)
+        #   - Categorical: Λ_o = Cov_p(W_out) (requires mu, W_out)
         # =====================================================================
-        if self.config.use_observation_precision and Sigma_obs is not None:
-            Sigma_o_reg = Sigma_obs + eps * torch.eye(K, device=device, dtype=dtype)
-            Lambda_o = torch.linalg.inv(Sigma_o_reg)  # (B, N, K, K)
-            M = M + Lambda_o
+        if self.config.use_observation_precision:
+            if mu is not None and W_out is not None:
+                # Categorical observation model (transformer softmax output)
+                # Λ_o = Hessian of CE loss = Cov_p(W_out) / τ²
+                Lambda_o = self.compute_categorical_observation_precision(
+                    mu, W_out, temperature=obs_temperature
+                )
+                M = M + Lambda_o
+            elif Sigma_obs is not None:
+                # Gaussian observation model (traditional active inference)
+                # Λ_o = Σ_o⁻¹
+                Sigma_o_reg = Sigma_obs + eps * torch.eye(K, device=device, dtype=dtype)
+                Lambda_o = torch.linalg.inv(Sigma_o_reg)  # (B, N, K, K)
+                M = M + Lambda_o
 
         # =====================================================================
         # Pre-compute Lambda_q once if needed for social terms (speed-up)
@@ -1409,6 +1493,7 @@ class HamiltonianFFN(nn.Module):
         Sigma_prior_dyn = Sigma_prior.detach()
         beta_dyn = beta.detach() if beta is not None else None
         Sigma_obs_dyn = Sigma_obs.detach() if Sigma_obs is not None else None
+        W_out_dyn = W_out.detach() if W_out is not None else None
 
         # Use enable_grad() to ensure autograd.grad() works even when called
         # from validation (which uses torch.no_grad() context)
@@ -1420,6 +1505,7 @@ class HamiltonianFFN(nn.Module):
 
             # =================================================================
             # Compute Extended Mass Matrix (from Inertia of Belief paper)
+            # M_i = Λ_{pi} + Λ_{oi} + Σ_k β_{ik} Λ̃_{qk} + Σ_j β_{ji} Λ_{qi}
             # =================================================================
             M, M_inv = self.mass_computer.compute_mass(
                 Sigma_prior=Sigma_prior_dyn,
@@ -1427,6 +1513,9 @@ class HamiltonianFFN(nn.Module):
                 phi=phi_dyn,
                 beta=beta_dyn,
                 Sigma_obs=Sigma_obs_dyn,
+                # For categorical observation precision (transformer softmax output):
+                mu=mu_dyn,
+                W_out=W_out_dyn,
             )
 
             # Sample initial momenta using extended mass
