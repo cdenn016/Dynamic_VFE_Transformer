@@ -82,19 +82,24 @@ def create_vfe_architecture(ax):
     ax.axis('off')
     ax.set_title('(a) Gauge-VFE Transformer', fontsize=12, fontweight='bold', pad=10)
 
-    # Input layer
-    draw_rounded_box(ax, 1.5, 7.5, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
-    ax.text(1.5, 6.6, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
+    # Input layer - wider box, smaller font
+    draw_rounded_box(ax, 1.5, 7.5, 3.0, 0.7, 'Token Embed', COLORS['embedding'], fontsize=8)
+    # Move state annotation to the right of the box
+    ax.text(3.3, 7.5, r'$(\mu_p, \Sigma_p, \phi_p)$', ha='left', va='center',
+            fontsize=8, color=COLORS['math'])
 
     # Transformer block (repeated)
     block_y = 4.5
 
-    # Attention
-    draw_rounded_box(ax, 5, block_y + 1.8, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
+    # Attention with SO(3) notation
+    draw_rounded_box(ax, 5, block_y + 1.8, 3.8, 0.8, 'KL-Attention', COLORS['attention'], fontsize=9)
+    # Add multi-head = SO(3) generators annotation
+    ax.text(7.2, block_y + 1.8, r'$H$ heads', ha='left', va='center', fontsize=7, color='gray')
+    ax.text(7.2, block_y + 1.4, r'$= G_1,G_2,G_3$', ha='left', va='center', fontsize=7, color=COLORS['math'])
     draw_math_box(ax, 5, block_y + 0.7, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}/\kappa)$')
 
     # VFE FFN
-    draw_rounded_box(ax, 5, block_y - 0.8, 3.5, 0.8, 'VFE Descent FFN', COLORS['ffn_vfe'])
+    draw_rounded_box(ax, 5, block_y - 0.8, 3.8, 0.8, 'VFE Descent FFN', COLORS['ffn_vfe'], fontsize=9)
     draw_math_box(ax, 5, block_y - 1.9, r'$\mu \leftarrow \mu - \eta \nabla_\mu F$')
 
     # Free energy equation
@@ -103,29 +108,29 @@ def create_vfe_architecture(ax):
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
 
     # Output
-    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'])
+    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'], fontsize=9)
     ax.text(5, -0.6, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
 
-    # Arrows
-    draw_arrow(ax, (1.5, 7.1), (1.5, 6.0))
-    ax.annotate('', xy=(3.2, 6.0), xytext=(1.5, 6.0),
+    # Arrows - adjusted for new positions
+    draw_arrow(ax, (1.5, 7.1), (1.5, 6.2))
+    ax.annotate('', xy=(3.0, 6.2), xytext=(1.5, 6.2),
                 arrowprops=dict(arrowstyle='->', color=COLORS['arrow'], lw=1.5))
-    draw_arrow(ax, (3.2, 6.0), (3.2, block_y + 1.8))
+    draw_arrow(ax, (3.0, 6.2), (3.0, block_y + 1.8))
     draw_arrow(ax, (5, block_y + 1.4), (5, block_y + 1.1))
     draw_arrow(ax, (5, block_y + 0.3), (5, block_y - 0.4))
     draw_arrow(ax, (5, block_y - 1.2), (5, block_y - 1.5))
     draw_arrow(ax, (5, block_y - 3.4), (5, 0.6))
 
     # Residual connection
-    ax.annotate('', xy=(7.5, block_y - 0.8), xytext=(7.5, block_y + 1.8),
+    ax.annotate('', xy=(7.2, block_y - 0.8), xytext=(7.2, block_y + 1.4),
                 arrowprops=dict(arrowstyle='->', color='gray', lw=1,
                                connectionstyle='arc3,rad=-0.3', ls='--'))
-    ax.text(8.2, block_y + 0.5, '+', fontsize=12, color='gray')
+    ax.text(7.8, block_y + 0.3, '+', fontsize=12, color='gray')
 
-    # Block label
-    ax.add_patch(Rectangle((2.8, block_y - 3.3), 4.4, 5.8,
+    # Block label - positioned inside top of box
+    ax.add_patch(Rectangle((2.7, block_y - 3.3), 4.8, 5.8,
                            fill=False, edgecolor='gray', linestyle='--', linewidth=1))
-    ax.text(2.9, block_y + 2.4, '×L layers', fontsize=8, color='gray')
+    ax.text(5, block_y + 2.3, r'$\times L$ layers', ha='center', fontsize=8, color='gray')
 
 
 def create_hamiltonian_architecture(ax):
@@ -136,19 +141,24 @@ def create_hamiltonian_architecture(ax):
     ax.axis('off')
     ax.set_title('(b) Gauge-Hamiltonian Transformer', fontsize=12, fontweight='bold', pad=10)
 
-    # Input layer
-    draw_rounded_box(ax, 1.5, 7.5, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
-    ax.text(1.5, 6.6, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
+    # Input layer - wider box, smaller font
+    draw_rounded_box(ax, 1.5, 7.5, 3.0, 0.7, 'Token Embed', COLORS['embedding'], fontsize=8)
+    # Move state annotation to the right of the box
+    ax.text(3.3, 7.5, r'$(\mu_p, \Sigma_p, \phi_p)$', ha='left', va='center',
+            fontsize=8, color=COLORS['math'])
 
     # Transformer block
     block_y = 4.5
 
-    # Attention (same as VFE)
-    draw_rounded_box(ax, 5, block_y + 1.8, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
+    # Attention with SO(3) notation
+    draw_rounded_box(ax, 5, block_y + 1.8, 3.8, 0.8, 'KL-Attention', COLORS['attention'], fontsize=9)
+    # Add multi-head = SO(3) generators annotation
+    ax.text(7.2, block_y + 1.8, r'$H$ heads', ha='left', va='center', fontsize=7, color='gray')
+    ax.text(7.2, block_y + 1.4, r'$= G_1,G_2,G_3$', ha='left', va='center', fontsize=7, color=COLORS['math'])
     draw_math_box(ax, 5, block_y + 0.7, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}/\kappa)$')
 
     # Hamiltonian FFN
-    draw_rounded_box(ax, 5, block_y - 0.8, 3.5, 0.8, 'Leapfrog FFN', COLORS['ffn_ham'], text_color='black')
+    draw_rounded_box(ax, 5, block_y - 0.8, 3.8, 0.8, 'Leapfrog FFN', COLORS['ffn_ham'], text_color='black', fontsize=9)
 
     # Hamiltonian equations - spread out more
     ax.text(5, block_y - 1.9,
@@ -164,103 +174,121 @@ def create_hamiltonian_architecture(ax):
             ha='center', fontsize=7, color='gray')
 
     # Energy conservation badge
-    ax.text(8.5, block_y - 0.8, r'$\Delta H \approx 0$', fontsize=8,
+    ax.text(8.3, block_y - 0.8, r'$\Delta H \approx 0$', fontsize=8,
             color='white', ha='center', va='center',
             bbox=dict(boxstyle='round,pad=0.2', facecolor=COLORS['ffn_ham'],
                      edgecolor='black', linewidth=0.8))
 
     # Output
-    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'])
+    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'], fontsize=9)
     ax.text(5, -0.6, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
 
-    # Arrows
-    draw_arrow(ax, (1.5, 7.1), (1.5, 6.0))
-    ax.annotate('', xy=(3.2, 6.0), xytext=(1.5, 6.0),
+    # Arrows - adjusted for new positions
+    draw_arrow(ax, (1.5, 7.1), (1.5, 6.2))
+    ax.annotate('', xy=(3.0, 6.2), xytext=(1.5, 6.2),
                 arrowprops=dict(arrowstyle='->', color=COLORS['arrow'], lw=1.5))
-    draw_arrow(ax, (3.2, 6.0), (3.2, block_y + 1.8))
+    draw_arrow(ax, (3.0, 6.2), (3.0, block_y + 1.8))
     draw_arrow(ax, (5, block_y + 1.4), (5, block_y + 1.1))
     draw_arrow(ax, (5, block_y + 0.3), (5, block_y - 0.4))
     draw_arrow(ax, (5, block_y - 1.2), (5, block_y - 1.5))
     draw_arrow(ax, (5, block_y - 3.5), (5, 0.6))
 
     # Residual
-    ax.annotate('', xy=(7.5, block_y - 0.8), xytext=(7.5, block_y + 1.8),
+    ax.annotate('', xy=(7.2, block_y - 0.8), xytext=(7.2, block_y + 1.4),
                 arrowprops=dict(arrowstyle='->', color='gray', lw=1,
                                connectionstyle='arc3,rad=-0.3', ls='--'))
-    ax.text(8.2, block_y + 0.5, '+', fontsize=12, color='gray')
+    ax.text(7.8, block_y + 0.3, '+', fontsize=12, color='gray')
 
-    # Block label
-    ax.add_patch(Rectangle((2.8, block_y - 3.4), 4.4, 5.9,
+    # Block label - positioned inside top of box
+    ax.add_patch(Rectangle((2.7, block_y - 3.4), 4.8, 5.9,
                            fill=False, edgecolor='gray', linestyle='--', linewidth=1))
-    ax.text(2.9, block_y + 2.4, '×L layers', fontsize=8, color='gray')
+    ax.text(5, block_y + 2.3, r'$\times L$ layers', ha='center', fontsize=8, color='gray')
 
 
 def create_manifold_diagram(ax):
-    """Create the belief manifold visualization."""
-    ax.set_xlim(-2, 12)
-    ax.set_ylim(-1, 7)
+    """Create the belief manifold visualization as a wavy rectangle."""
+    ax.set_xlim(-1, 13)
+    ax.set_ylim(-0.5, 5.5)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title('(c) Belief Dynamics on Statistical Manifold', fontsize=12, fontweight='bold', pad=10)
 
-    # Draw curved manifold surface
-    theta = np.linspace(-0.3, np.pi + 0.3, 100)
-    r = 4
-    x_curve = 5 + r * np.cos(theta)
-    y_curve = 3 + 0.5 * r * np.sin(theta)
-    ax.fill_between(x_curve, y_curve - 0.3, y_curve + 0.3,
-                    color=COLORS['manifold'], alpha=0.3)
-    ax.plot(x_curve, y_curve, color=COLORS['manifold'], linewidth=2)
+    # Draw wavy rectangle manifold
+    # Top edge (wavy)
+    x_top = np.linspace(0.5, 11.5, 200)
+    y_top = 4.5 + 0.15 * np.sin(4 * np.pi * (x_top - 0.5) / 11)
+    # Bottom edge (wavy)
+    x_bot = np.linspace(0.5, 11.5, 200)
+    y_bot = 0.8 + 0.15 * np.sin(4 * np.pi * (x_bot - 0.5) / 11 + 0.5)
 
-    # Prior point
-    prior_x, prior_y = 2, 3.2
-    ax.plot(prior_x, prior_y, 'o', color=COLORS['embedding'], markersize=12, zorder=5)
-    ax.text(prior_x, prior_y + 0.6, r'Prior $p$', ha='center', fontsize=9, color=COLORS['embedding'])
-    ax.text(prior_x, prior_y - 0.5, r'$(\mu_p, \Sigma_p)$', ha='center', fontsize=8, color=COLORS['math'])
+    # Fill the manifold region
+    ax.fill_between(x_top, y_bot, y_top, color=COLORS['manifold'], alpha=0.2)
+    ax.plot(x_top, y_top, color=COLORS['manifold'], linewidth=2)
+    ax.plot(x_bot, y_bot, color=COLORS['manifold'], linewidth=2)
+    # Left and right edges
+    ax.plot([0.5, 0.5], [y_bot[0], y_top[0]], color=COLORS['manifold'], linewidth=2)
+    ax.plot([11.5, 11.5], [y_bot[-1], y_top[-1]], color=COLORS['manifold'], linewidth=2)
 
-    # Posterior point (VFE)
-    post_vfe_x, post_vfe_y = 5.5, 3.5
+    # Manifold label at top
+    ax.text(6, 4.9, r'Statistical Manifold $\mathcal{M}$ (SPD matrices)', ha='center', fontsize=10,
+            color=COLORS['manifold'], style='italic')
+
+    # Prior point (left side)
+    prior_x, prior_y = 2, 2.6
+    ax.plot(prior_x, prior_y, 'o', color=COLORS['embedding'], markersize=14, zorder=5)
+    ax.text(prior_x, prior_y - 0.6, r'Prior $p$', ha='center', fontsize=9,
+            fontweight='bold', color=COLORS['embedding'])
+    ax.text(prior_x, prior_y + 0.5, r'$(\mu_p, \Sigma_p)$', ha='center', fontsize=8, color=COLORS['math'])
+
+    # Posterior point (VFE) - middle
+    post_vfe_x, post_vfe_y = 6, 2.8
     ax.plot(post_vfe_x, post_vfe_y, 's', color=COLORS['ffn_vfe'], markersize=12, zorder=5)
-    ax.text(post_vfe_x + 0.5, post_vfe_y + 0.6, r'Posterior $q$ (VFE)', ha='center', fontsize=9, color=COLORS['ffn_vfe'])
+    ax.text(post_vfe_x, post_vfe_y - 0.6, r'$q$ (VFE)', ha='center', fontsize=9,
+            fontweight='bold', color=COLORS['ffn_vfe'])
 
-    # Posterior point (Hamiltonian)
-    post_ham_x, post_ham_y = 7.5, 2.8
-    ax.plot(post_ham_x, post_ham_y, '^', color=COLORS['ffn_ham'], markersize=12, zorder=5)
-    ax.text(post_ham_x + 0.8, post_ham_y + 0.6, r'Posterior $q$ (Ham)', ha='center', fontsize=9,
-            color='#998800')  # Darker yellow for readability
+    # Posterior point (Hamiltonian) - right
+    post_ham_x, post_ham_y = 9.5, 2.4
+    ax.plot(post_ham_x, post_ham_y, '^', color='#AA8800', markersize=13, zorder=5)
+    ax.text(post_ham_x, post_ham_y - 0.6, r'$q$ (Ham)', ha='center', fontsize=9,
+            fontweight='bold', color='#AA8800')
 
-    # VFE gradient descent path
-    t_vfe = np.linspace(0, 1, 20)
-    x_vfe = prior_x + (post_vfe_x - prior_x) * t_vfe + 0.3 * np.sin(3 * np.pi * t_vfe)
-    y_vfe = prior_y + (post_vfe_y - prior_y) * t_vfe + 0.2 * np.sin(2 * np.pi * t_vfe)
-    ax.plot(x_vfe, y_vfe, '--', color=COLORS['ffn_vfe'], linewidth=2, label='VFE descent')
-    ax.annotate('', xy=(post_vfe_x - 0.1, post_vfe_y - 0.05),
-                xytext=(x_vfe[-2], y_vfe[-2]),
-                arrowprops=dict(arrowstyle='->', color=COLORS['ffn_vfe'], lw=2))
+    # VFE gradient descent path (dashed, direct)
+    t_vfe = np.linspace(0, 1, 30)
+    x_vfe = prior_x + (post_vfe_x - prior_x) * t_vfe
+    y_vfe = prior_y + (post_vfe_y - prior_y) * t_vfe + 0.3 * np.sin(2 * np.pi * t_vfe)
+    ax.plot(x_vfe, y_vfe, '--', color=COLORS['ffn_vfe'], linewidth=2.5, zorder=4)
+    ax.annotate('', xy=(post_vfe_x - 0.15, post_vfe_y + 0.02),
+                xytext=(x_vfe[-3], y_vfe[-3]),
+                arrowprops=dict(arrowstyle='->', color=COLORS['ffn_vfe'], lw=2.5))
 
-    # Hamiltonian orbit path
-    t_ham = np.linspace(0, 1, 50)
+    # Hamiltonian orbit path (solid, oscillatory - energy conserving)
+    t_ham = np.linspace(0, 1, 80)
     x_ham = prior_x + (post_ham_x - prior_x) * t_ham
-    y_ham = prior_y + (post_ham_y - prior_y) * t_ham + 0.8 * np.sin(4 * np.pi * t_ham) * (1 - t_ham)
-    ax.plot(x_ham, y_ham, '-', color=COLORS['ffn_ham'], linewidth=2, label='Hamiltonian orbit')
-    ax.annotate('', xy=(post_ham_x - 0.1, post_ham_y + 0.05),
-                xytext=(x_ham[-2], y_ham[-2]),
-                arrowprops=dict(arrowstyle='->', color=COLORS['ffn_ham'], lw=2))
+    # Oscillatory path showing energy conservation
+    y_ham = prior_y + (post_ham_y - prior_y) * t_ham + 0.6 * np.sin(5 * np.pi * t_ham) * np.exp(-1.5 * t_ham)
+    ax.plot(x_ham, y_ham, '-', color='#AA8800', linewidth=2.5, zorder=4)
+    ax.annotate('', xy=(post_ham_x - 0.15, post_ham_y + 0.05),
+                xytext=(x_ham[-3], y_ham[-3]),
+                arrowprops=dict(arrowstyle='->', color='#AA8800', lw=2.5))
 
-    # Legend
+    # Add gradient annotation for VFE
+    ax.annotate(r'$-\nabla F$', xy=(4, 2.9), fontsize=9, color=COLORS['ffn_vfe'],
+                ha='center', style='italic')
+
+    # Add energy level annotation for Hamiltonian
+    ax.annotate(r'$H = \mathrm{const}$', xy=(7, 3.5), fontsize=9, color='#AA8800',
+                ha='center', style='italic')
+
+    # Legend (repositioned)
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS['embedding'],
-               markersize=10, label='Prior'),
-        Line2D([0], [0], linestyle='--', color=COLORS['ffn_vfe'], lw=2,
-               label=r'VFE: $\nabla F$ descent'),
-        Line2D([0], [0], linestyle='-', color=COLORS['ffn_ham'], lw=2,
-               label=r'Ham: $H$-conserving'),
+               markersize=10, label=r'Embedding prior $p$'),
+        Line2D([0], [0], linestyle='--', color=COLORS['ffn_vfe'], lw=2.5,
+               label=r'VFE: gradient descent'),
+        Line2D([0], [0], linestyle='-', color='#AA8800', lw=2.5,
+               label=r'Hamiltonian: symplectic flow'),
     ]
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=8, framealpha=0.9)
-
-    # Manifold label
-    ax.text(5, 5.5, r'Statistical Manifold $\mathcal{M}$', ha='center', fontsize=10,
-            color=COLORS['manifold'], style='italic')
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=8, framealpha=0.95)
 
 
 def create_full_figure():
