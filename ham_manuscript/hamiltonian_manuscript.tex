@@ -461,33 +461,18 @@ With damping ($\gamma = 0.1$) & 10 & 0.01 & [TBD] & N/A \\
 
 \subsection{Why Does It Work?}
 
-The Hamiltonian FFN succeeds because:
-
-\begin{enumerate}
-\item \textbf{Free energy is the correct objective.} Active inference establishes that perception corresponds to minimizing variational free energy \citep{Friston2010,Parr2022}. Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow.
-
-\item \textbf{Geometry encodes inductive bias.} The Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections encode priors about belief transformation that would otherwise require learning. As shown by \citet{Dennis2025atten}, standard transformer attention emerges as a degenerate limit of this richer geometry.
-
-\item \textbf{Symplectic structure preserves information.} Unlike gradient descent, which loses information through contraction, Hamiltonian flow is volume-preserving in phase space (Liouville's theorem). This enables exact reversal.
-
-\item \textbf{Precision equals mass.} Following \citet{Dennis2025inertia}, confident beliefs (high precision $\Lambda = \Sig^{-1}$) are ``heavy'' and resist change, while uncertain beliefs are ``light'' and respond readily. This provides a natural regularization: the dynamics automatically respect uncertainty.
-\end{enumerate}
+The success of the Hamiltonian FFN rests on four principles. First, active inference establishes that perception corresponds to minimizing variational free energy \citep{Friston2010,Parr2022}; Hamiltonian dynamics explore this landscape via energy-conserving orbits rather than dissipative gradient flow. Second, geometry encodes inductive bias: the Fisher-Rao metric, SPD manifold structure, and $\mathrm{SO}(3)$ gauge connections build in priors about belief transformation that standard transformers must learn from data. As \citet{Dennis2025atten} showed, standard attention emerges as a degenerate limit of this richer geometry. Third, symplectic structure preserves information---unlike gradient descent, which loses information through phase-space contraction, Hamiltonian flow is volume-preserving (Liouville's theorem), enabling exact reversal. Fourth, precision equals mass: following \citet{Dennis2025inertia}, confident beliefs (high precision $\Lambda = \Sig^{-1}$) are ``heavy'' and resist change, while uncertain beliefs are ``light'' and respond readily. This provides natural regularization where the dynamics automatically respect uncertainty.
 
 \subsection{Connection to Damped Belief Dynamics}
 
-In the presence of dissipation (modeling attention deficits, metabolic costs, or environmental noise), the dynamics become a damped oscillator \citep{Dennis2025inertia}:
+In the presence of dissipation---modeling attention deficits, metabolic costs, or environmental noise---the dynamics become a damped oscillator \citep{Dennis2025inertia}:
 \begin{equation}
 M_i \ddot{\mu}_i + \gamma_i \dot{\mu}_i + \nabla_{\mu_i} \F = 0
 \label{eq:damped_oscillator}
 \end{equation}
-where $\gamma_i > 0$ is a damping coefficient. This equation predicts three dynamical regimes:
-\begin{itemize}
-\item \textbf{Overdamped} ($\gamma > 2\sqrt{KM}$): Monotonic decay to equilibrium---equivalent to standard gradient descent / Bayesian updating
-\item \textbf{Critical} ($\gamma = 2\sqrt{KM}$): Fastest approach to equilibrium without oscillation
-\item \textbf{Underdamped} ($\gamma < 2\sqrt{KM}$): Oscillatory approach with overshooting---beliefs can transiently move \emph{away} from equilibrium
-\end{itemize}
+where $\gamma_i > 0$ is a damping coefficient. This equation predicts three dynamical regimes. In the \emph{overdamped} regime ($\gamma > 2\sqrt{KM}$), beliefs decay monotonically to equilibrium, recovering standard gradient descent and Bayesian updating. At \emph{critical damping} ($\gamma = 2\sqrt{KM}$), beliefs approach equilibrium as fast as possible without oscillation. In the \emph{underdamped} regime ($\gamma < 2\sqrt{KM}$), beliefs oscillate around equilibrium, transiently moving \emph{away} from the minimum before eventually settling.
 
-Our pure Hamiltonian implementation ($\gamma = 0$) operates in the underdamped limit, where beliefs oscillate around the free energy minimum. This may seem undesirable for convergence, but provides two benefits: (1) exact reversibility for interpretability, and (2) exploration of the energy landscape beyond local minima.
+Our pure Hamiltonian implementation ($\gamma = 0$) operates at the underdamped extreme, where beliefs orbit the free energy minimum indefinitely. This may seem undesirable for convergence, but provides two benefits: exact reversibility for interpretability, and exploration of the energy landscape beyond local minima.
 
 \subsection{The Pendulum Analogy}
 
@@ -499,16 +484,9 @@ This explains why gradient descent (the $\gamma \to \infty$ limit) is irreversib
 
 \subsection{Implications for Interpretability}
 
-Exact reversibility enables new forms of mechanistic analysis:
+Exact reversibility enables qualitatively new forms of mechanistic analysis. Token attribution becomes deterministic: given any output feature, we can trace its complete causal history by reversing the dynamics. Phase space visualization allows geometric understanding of belief evolution---trajectories, orbits, and fixed points become meaningful concepts. Counterfactual analysis follows naturally: perturbing initial conditions and observing trajectory divergence reveals sensitivity structure. Information flow can be quantified precisely, determining how much each input token contributes to each output.
 
-\begin{itemize}
-\item \textbf{Token attribution}: Given any output feature, trace its complete causal history
-\item \textbf{Phase space visualization}: Understand belief evolution geometrically
-\item \textbf{Counterfactual analysis}: Perturb initial conditions and observe trajectory divergence
-\item \textbf{Information flow}: Quantify how much each input contributes to each output
-\end{itemize}
-
-This contrasts sharply with post-hoc interpretability methods (attention visualization, probing) that provide correlational rather than causal insights.
+These capabilities contrast sharply with post-hoc interpretability methods. Attention visualization and probing classifiers provide correlational evidence; Hamiltonian reversal provides causal reconstruction. Preliminary experiments suggest [TBD: quantitative interpretability comparison pending experimental results].
 
 \subsection{Social Mass and Attention Dynamics}
 
@@ -567,39 +545,18 @@ The second term in $\dot{\pip}_\mu$ is the ``reservoir force''---the influence o
 
 \subsection{Limitations}
 
-\begin{itemize}
-\item \textbf{Computational cost}: Each FFN requires $n_{\mathrm{steps}}$ gradient computations
-\item \textbf{Hyperparameter sensitivity}: $\dt$, $n_{\mathrm{steps}}$, momentum scale require tuning
-\item \textbf{Scale}: Current experiments are small-scale; large model behavior unknown
-\item \textbf{SPD constraints}: Maintaining $\Sig \in \SPD(K)$ requires care during integration
-\end{itemize}
+Several limitations warrant acknowledgment. Computational cost is the most immediate concern: each FFN requires $n_{\mathrm{steps}}$ gradient computations, compared to a single forward pass through a learned MLP. [TBD: wall-clock timing comparison from experiments.] Hyperparameter sensitivity presents another challenge; the timestep $\dt$, number of integration steps $n_{\mathrm{steps}}$, and initial momentum scale all require tuning and interact in non-obvious ways. Scale remains untested: our experiments are small-scale, and large-model behavior---including potential instabilities at high dimension---is unknown. Finally, maintaining the SPD constraint $\Sig \in \SPD(K)$ requires numerical care during integration; eigenvalue clamping or Cholesky reparameterization may be necessary at scale.
 
 %=============================================================================
 \section{Conclusion}
 \label{sec:conclusion}
 %=============================================================================
 
-We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Building on the theoretical foundation that transformers are degenerate limits of gauge-theoretic variational inference \citep{Dennis2025atten} and the identification of Fisher information as inertial mass \citep{Dennis2025inertia}, we showed that:
+We introduced Reversible Gauge Transformers, replacing learned feedforward networks with Hamiltonian dynamics on statistical manifolds. Building on the theoretical foundation that transformers are degenerate limits of gauge-theoretic variational inference \citep{Dennis2025atten} and the identification of Fisher information as inertial mass \citep{Dennis2025inertia}, we demonstrated that the FFN can be replaced by symplectic integration with zero learned parameters while achieving performance comparable to learned MLPs [TBD: final perplexity comparison]. The architecture achieves exact reversibility to $10^{-7}$ precision for mean dynamics, enabling mechanistic token attribution through trajectory reversal. Energy conservation via the leapfrog integrator provides stability guarantees absent in standard architectures, and the mass-equals-precision identification gives beliefs physical inertia that naturally regularizes the dynamics.
 
-\begin{itemize}
-\item The FFN can be replaced by symplectic integration with \textbf{zero learned parameters}
-\item Performance is comparable to learned MLPs, consistent with prior validation \citep{Dennis2025trans}
-\item \textbf{Exact reversibility} (to $10^{-7}$ precision) enables mechanistic token attribution
-\item \textbf{Energy conservation} via the leapfrog integrator provides stability guarantees
-\item The \textbf{mass = precision} identification gives beliefs physical inertia, providing natural regularization
-\end{itemize}
+This work suggests that transformer FFN parameters---constituting the majority of weights in large models---may be replaceable by principled dynamical systems grounded in physics and information geometry. The framework unifies attention mechanisms, belief dynamics, and backpropagation under a single geometric principle: tokens are agents on a statistical manifold, inference is Hamiltonian flow, and learning is symmetry breaking.
 
-This work suggests that transformer FFN parameters---which constitute the majority of weights in large models---may be replaceable by principled dynamical systems grounded in physics and information geometry. The framework unifies attention mechanisms, belief dynamics, and backpropagation under a single geometric principle: tokens are agents on a statistical manifold, inference is Hamiltonian flow, and learning is symmetry breaking.
-
-\paragraph{Future Directions.}
-\begin{enumerate}
-\item Scale to large language models and compare computational tradeoffs
-\item Explore the underdamped regime for belief oscillations and resonance phenomena
-\item Extend gauge group from $\mathrm{SO}(3)$ to $\mathrm{SU}(n)$ or Lorentz group for richer representational structure
-\item Develop reversibility-based interpretability tools for production models
-\item Investigate whether standard transformers implicitly minimize gauge curvature, as suggested by \citet{Dennis2025trans}
-\item Combine with Hamiltonian Monte Carlo for Bayesian uncertainty quantification
-\end{enumerate}
+\paragraph{Future Directions.} Several extensions merit investigation. Scaling to large language models will clarify computational tradeoffs and whether the benefits persist at scale. The underdamped regime offers unexplored territory: belief oscillations and resonance phenomena may yield new computational primitives. Extending the gauge group from $\mathrm{SO}(3)$ to $\mathrm{SU}(n)$ or the Lorentz group could provide richer representational structure for multimodal or physics-informed applications. Reversibility-based interpretability tools warrant development for production models, moving beyond proof-of-concept demonstrations. The observation by \citet{Dennis2025trans} that standard transformers may implicitly minimize gauge curvature deserves further investigation. Finally, combining Hamiltonian dynamics with Hamiltonian Monte Carlo could enable principled Bayesian uncertainty quantification in transformer predictions.
 
 \section*{Acknowledgments}
 [To be added]
