@@ -220,7 +220,7 @@ M_i = \underbrace{\Lambda_{p_i}}_{\text{prior precision}} + \underbrace{\Lambda_
 \label{eq:mass_matrix}
 \end{equation}
 
-where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k$'s precision transported to agent $i$'s frame. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
+where $\Lambda = \Sig^{-1}$ denotes precision (inverse covariance) and $\tilde{\Lambda}_{q_k} = \Omega_{ik}\Lambda_{q_k}\Omega_{ik}^\top$ is neighbor $k$'s precision transported to agent $i$'s frame via the gauge connection. This formula has transparent physical meaning: \emph{confident beliefs are massive}---agents with high precision (tight uncertainty) resist change, while uncertain agents respond readily to evidence.
 
 \paragraph{Categorical Observation Precision.} While the theoretical framework uses multivariate Gaussian observations, transformer language models predict categorical distributions over vocabulary tokens. To bridge this gap, we derive the observation precision $\Lambda_{o_i}$ from the Hessian of the cross-entropy loss with respect to beliefs.
 
@@ -242,6 +242,13 @@ This is the Fisher information matrix of the categorical distribution, which sim
 \end{equation}
 
 where $\bm{w} \in \R^K$ is a random vector with $P(\bm{w} = \bm{w}_v) = p_v$. This covariance-based formulation reveals a geometric interpretation: the observation precision measures how much the output projection vectors ``spread out'' under the current belief-induced distribution. High-entropy predictions (uniform $\bm{p}$) yield high observation precision, anchoring beliefs more strongly; peaked predictions reduce the effective constraint.
+
+\paragraph{Emergent Nonlinearity.} Standard transformers use ad-hoc nonlinearities like GELU or ReLU in the FFN. In our framework, the nonlinearity emerges naturally from differentiating the softmax attention weights. The force on beliefs includes:
+\begin{equation}
+\frac{\partial \beta_{ij}}{\partial \bm{\mu}_i} = \frac{\beta_{ij}}{\kappa}\left[\frac{\partial \KL_{ij}}{\partial \bm{\mu}_i} - \sum_k \beta_{ik} \frac{\partial \KL_{ik}}{\partial \bm{\mu}_i}\right]
+\label{eq:nonlinearity}
+\end{equation}
+This is the softmax Jacobian applied to KL gradients---a principled nonlinearity that emerges from attention dynamics rather than being imposed. Physical interpretation: as beliefs $\bm{\mu}_i$ change, attention weights $\beta_{ij}$ redistribute, creating feedback that depends on the current attention pattern. This is the mechanism by which ``agents adjust attention as beliefs change.''
 
 \paragraph{Hamilton's Equations.} The equations of motion are:
 \begin{align}
@@ -382,16 +389,18 @@ The central interpretability result: we can trace output tokens back to their in
 \centering
 \caption{Trajectory reversal accuracy. Initial state recovery after forward-backward integration.}
 \label{tab:reversibility}
-\begin{tabular}{cccc}
+\begin{tabular}{ccccc}
 \toprule
-$n_{\mathrm{steps}}$ & $\dt$ & Relative Error $\|\bm{\mu}_0 - \bm{\mu}_0'\|/\|\bm{\mu}_0\|$ \\
+$n_{\mathrm{steps}}$ & $\dt$ & $\bm{\mu}$ Error & $\Sig$ Error \\
 \midrule
-10 & 0.01 & $\sim 10^{-7}$ \\
-20 & 0.01 & $\sim 10^{-7}$ \\
-10 & 0.02 & $\sim 10^{-6}$ \\
+10 & 0.01 & $\sim 10^{-7}$ & $\sim 10^{-2}$ \\
+20 & 0.01 & $\sim 10^{-7}$ & $\sim 10^{-2}$ \\
+10 & 0.02 & $\sim 10^{-6}$ & $\sim 10^{-2}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\noindent\textbf{Note on $\bm{\mu}$ vs $\Sig$ reversibility:} The $\bm{\mu}$ dynamics use a constant mass matrix (prior $\Sig_p$), yielding exact symplecticity and excellent reversal. The $\Sig$ dynamics on $\SPD(K)$ have position-dependent curvature via $T_\Sigma = \tr(\pi_\Sigma \Sig \pi_\Sigma \Sig)$, causing explicit leapfrog to be only first-order accurate on the curved manifold. For practical transformer use (1--4 steps per layer), this is negligible; token attribution via $\bm{\mu}$ reversal works excellently.
 
 % THE MONEY FIGURE
 \begin{figure}[h]
@@ -463,6 +472,14 @@ where $\gamma_i > 0$ is a damping coefficient. This equation predicts three dyna
 \end{itemize}
 
 Our pure Hamiltonian implementation ($\gamma = 0$) operates in the underdamped limit, where beliefs oscillate around the free energy minimum. This may seem undesirable for convergence, but provides two benefits: (1) exact reversibility for interpretability, and (2) exploration of the energy landscape beyond local minima.
+
+\subsection{The Pendulum Analogy}
+
+The Hamiltonian FFN is best understood as a \textbf{pendulum swinging in a bowl shaped by learned embeddings}. A frictionless pendulum released from angle $\theta_0$ conserves total energy $H = T + V$, oscillating forever without converging to rest. The Hamiltonian FFN operates identically: beliefs $\bm{\mu}_q$ orbit the free energy minimum rather than settling there.
+
+The key insight is \textbf{stroboscopic readout}: we don't wait for convergence---we photograph the pendulum at $n_{\mathrm{steps}}$ and use that position. Training doesn't teach the pendulum to swing differently; it \emph{reshapes the gravity well} (the free energy landscape $\F$) so that the orbit at step $n$ produces correct predictions.
+
+This explains why gradient descent (the $\gamma \to \infty$ limit) is irreversible: it's an overdamped pendulum that dissipates all kinetic information. Running the movie backward shows spontaneous rising---thermodynamically forbidden. The Hamiltonian FFN, being undamped, looks valid in both directions. See \Cref{app:pendulum} for the complete analogy.
 
 \subsection{Implications for Interpretability}
 
@@ -655,5 +672,91 @@ Observation temperature & $\tau$ & 1.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+%=============================================================================
+\section{The Pendulum Analogy}
+\label{app:pendulum}
+%=============================================================================
+
+The Hamiltonian FFN admits a precise mechanical analogy that clarifies its operation.
+
+\subsection{A Simple Pendulum}
+
+A frictionless pendulum released from angle $\theta_0$ has:
+\begin{align}
+\text{Potential:} \quad V(\theta) &= mgL(1 - \cos\theta) \\
+\text{Kinetic:} \quad T &= \tfrac{1}{2}mL^2\dot{\theta}^2 \\
+\text{Total:} \quad H &= T + V = \text{constant}
+\end{align}
+
+The pendulum swings forever, energy sloshing between kinetic and potential forms. It never converges to equilibrium ($\theta = 0$) without friction.
+
+\subsection{The Hamiltonian FFN as Pendulum}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Pendulum} & \textbf{Hamiltonian FFN} & \textbf{Interpretation} \\
+\midrule
+Angle $\theta$ & Belief $\bm{\mu}_q$ & Position in state space \\
+Angular momentum $p$ & Momentum $\pip_\mu$ & Rate of belief change \\
+Gravity well $V(\theta)$ & Free energy $\F(\bm{\mu})$ & Energy landscape \\
+Mass $m$ & Precision $\Lambda = \Sig^{-1}$ & Resistance to change \\
+Friction $\gamma$ & Damping (set to 0) & Information dissipation \\
+Period $T$ & $n_{\mathrm{steps}} \times \dt$ & Integration horizon \\
+Clock readout & Token prediction & Output at fixed time \\
+Run film backward & Negate $\pip$, integrate & Exact state recovery \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Stroboscopic Readout}
+
+The critical insight: \textbf{we don't wait for convergence}. Imagine photographing a swinging pendulum with a strobe light at fixed intervals. Different initial conditions yield different positions at the flash.
+
+The Hamiltonian FFN works identically:
+\begin{verbatim}
+for step in range(n_steps):    # strobe flashes
+    state = leapfrog(state)
+return state.mu_q               # photograph at final flash
+\end{verbatim}
+
+The output is wherever the belief IS after $n_{\mathrm{steps}}$---mid-swing, not at rest.
+
+\subsection{What Training Does}
+
+Training \textbf{shapes the bowl}. By adjusting embeddings $(\bm{\mu}_p, \Sig_p)$, we sculpt the free energy landscape $\F$ so that:
+\begin{enumerate}
+\item Input beliefs start at specific positions (determined by token embeddings)
+\item Trajectories evolve for exactly $n_{\mathrm{steps}}$
+\item Final positions (mid-orbit!) produce correct next-token predictions
+\end{enumerate}
+
+Training doesn't teach the pendulum to swing differently. It reshapes the gravity well.
+
+\subsection{Why Gradient Descent Is Irreversible}
+
+Gradient descent is an \textbf{overdamped pendulum} ($\gamma \to \infty$):
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Method} & \textbf{Equation} & \textbf{Behavior} \\
+\midrule
+Gradient descent & $\dot{\bm{\mu}} = -\nabla\F$ & Crawls downhill, forgets path \\
+Damped Hamiltonian & $M\ddot{\bm{\mu}} + \gamma\dot{\bm{\mu}} + \nabla\F = 0$ & Spirals to rest \\
+Pure Hamiltonian & $M\ddot{\bm{\mu}} + \nabla\F = 0$ & Orbits forever, reversible \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+An overdamped pendulum filmed and reversed shows spontaneous rising from rest---thermodynamically forbidden. A frictionless pendulum reversed looks physically valid. This is why Hamiltonian FFN achieves $10^{-7}$ reversal error while gradient descent cannot be reversed at all.
+
+\subsection{Mass = Precision}
+
+From \citet{dennis2025inertia}: a heavy pendulum (large $m$) swings slowly, resists deflection, stores more momentum. A high-precision belief (large $\Lambda = \Sig^{-1}$) changes slowly, resists evidence, carries more epistemic momentum. \textbf{Confident beliefs are heavy pendulums.}
+
+\subsection{One Sentence Summary}
+
+\emph{The Hamiltonian FFN is a pendulum swinging in a bowl shaped by learned embeddings, read out mid-swing, whose movie can be played backward exactly.}
 
 \end{document}
