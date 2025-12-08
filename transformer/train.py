@@ -320,6 +320,23 @@ def compute_free_energy_loss(
         metrics['attention/gamma_mean'] = gamma.mean().item()
         metrics['attention/kl_prior_mean'] = kl_prior.mean().item()
 
+    # =================================================================
+    # Retrieve Hamiltonian diagnostics (if available)
+    # =================================================================
+    # For Hamiltonian mode, diagnostics are stored in the transformer blocks
+    # after the forward pass. Retrieve them for publication metrics.
+    hamiltonian_diagnostics = None
+    if hasattr(model, 'transformer') and hasattr(model.transformer, 'get_hamiltonian_diagnostics'):
+        all_diagnostics = model.transformer.get_hamiltonian_diagnostics()
+        # Get the last layer's diagnostics (most relevant for output)
+        for diag in reversed(all_diagnostics):
+            if diag is not None:
+                hamiltonian_diagnostics = diag
+                break
+
+    if hamiltonian_diagnostics is not None:
+        metrics['hamiltonian_diagnostics'] = hamiltonian_diagnostics
+
     return total_loss, metrics
 
 
