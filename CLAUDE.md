@@ -96,6 +96,28 @@ The `spd_kinetic_gradient` correction improves but doesn't achieve exact symplec
 
 Training shapes the prior landscape. The forward pass evolves beliefs through that landscape.
 
+### Critical Notation: Priors (p) vs Momenta (π)
+
+**These are completely different objects living in different spaces:**
+
+| Symbol | Name | Type | Space |
+|--------|------|------|-------|
+| p_i = N(μ_p, Σ_p) | Prior | Distribution | P(ℝ^K) (probability measures) |
+| q_i = N(μ_q, Σ_q) | Belief | Distribution | P(ℝ^K) (probability measures) |
+| π_μ | Momentum (for μ) | Cotangent vector | T*ℝ^K ≅ ℝ^K |
+| π_Σ | Momentum (for Σ) | Cotangent vector | T*SPD(K) |
+| π_φ | Momentum (for φ) | Cotangent vector | T*so(3) ≅ ℝ³ |
+
+**Never confuse:**
+- **p** (Latin letter) = prior probability distribution
+- **π** (Greek pi) = phase space momentum, conjugate to position
+
+The kinetic energy uses **momenta**: T = ½ π^T M⁻¹ π
+
+The KL divergence uses **distributions**: KL(q ‖ p)
+
+See `ham_manuscript/hamiltonian_manuscript.tex` Section 3.2 for formal treatment.
+
 ### The Mass Matrix (Inertia of Belief)
 
 Full formula from the paper:

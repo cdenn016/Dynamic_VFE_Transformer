@@ -131,6 +131,31 @@ ds^2 = d\bm{\mu}^\top \Sig^{-1} d\bm{\mu} + \frac{1}{4}\tr\left(\Sig^{-1} d\Sig\
 \end{equation}
 This metric makes KL divergence the squared geodesic distance to second order \citep{Amari2016}, grounding our attention mechanism in information geometry.
 
+\subsection{Notation: Priors vs Momenta}
+\label{sec:notation}
+
+A notational clarification is essential. We distinguish three categories of objects that could be confused:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Name} & \textbf{Type} & \textbf{Role} \\
+\midrule
+$q_i = \N(\bm{\mu}_{q_i}, \Sig_{q_i})$ & Belief & Distribution & Evolves via Hamiltonian \\
+$p_i = \N(\bm{\mu}_{p_i}, \Sig_{p_i})$ & Prior & Distribution & Fixed (learned embeddings) \\
+$\pip_\mu, \pip_\Sigma, \pip_\phi$ & Momenta & Cotangent vectors & Conjugate to positions \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Critical distinction.} The \textbf{prior} $p_i$ (Latin letter) is a probability distribution---the embedding that anchors token $i$'s beliefs. The \textbf{momentum} $\pip$ (Greek letter pi) is a cotangent vector in phase space, conjugate to the position coordinates $(\bm{\mu}, \Sig, \bm{\phi})$. These live in entirely different spaces:
+\begin{align}
+p_i &\in \mathcal{P}(\R^K) && \text{(space of probability distributions)} \\
+\pip_\mu &\in T^*_\mu \R^K \cong \R^K && \text{(cotangent space at $\bm{\mu}$)}
+\end{align}
+
+The subscripts $q$ and $p$ on the means $\bm{\mu}_{q_i}, \bm{\mu}_{p_i}$ and covariances $\Sig_{q_i}, \Sig_{p_i}$ indicate whether we refer to the belief or prior, respectively. When context is clear, we drop subscripts: $\bm{\mu}_i$ for the evolving belief mean, $\bm{\mu}_i^{\mathrm{embed}}$ for the fixed prior mean.
+
 \subsection{Gauge Structure on $\mathrm{SO}(3)$ Bundle}
 \label{sec:gauge_structure}
 
@@ -503,6 +528,51 @@ The mass matrix (\Cref{eq:mass_matrix}) reveals a striking property: \emph{atten
 In transformer terms: tokens that are heavily attended-to (e.g., important contextual words) acquire greater inertia and maintain their representations more stably through layers. This provides a geometric explanation for why attention creates ``anchors'' in the representation---the attended-to tokens are literally more massive and harder to move.
 
 Conversely, tokens that attend strongly to others (high $\sum_k \beta_{ik}$) inherit mass from their neighbors, becoming coupled to the network's collective state. This predicts that the dynamics should exhibit emergent collective modes where groups of mutually-attending tokens move together.
+
+\subsection{Grand Canonical Interpretation}
+\label{sec:grand_canonical}
+
+The Hamiltonian formulation admits a precise thermodynamic analogy to the grand canonical ensemble, providing intuition for the coupling between tokens.
+
+\paragraph{The grand potential.} The full Hamiltonian has the structure of a grand potential:
+\begin{equation}
+K = \underbrace{\sum_i T_i(\pip_i)}_{\text{kinetic}} + \underbrace{\sum_i V_i(\bm{\mu}_i)}_{\text{local potential}} - \underbrace{\sum_{i,j} \beta_{ij} \cdot \KL_{ij}}_{\text{coupling}}
+\label{eq:grand_potential}
+\end{equation}
+where $T_i(\pip_i) = \frac{1}{2}\pip_i^\top M_i^{-1} \pip_i$ is the kinetic energy (note: $\pip$ denotes \emph{momentum}, not priors---see \Cref{sec:notation}), and $V_i = \KL(q_i \| p_i) - \mathbb{E}_{q_i}[\log p(o_i | c_i)]$ is the local free energy.
+
+The thermodynamic correspondence is:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Grand Canonical Ensemble} & \textbf{Hamiltonian Transformer} \\
+\midrule
+Grand potential $\Omega = U - TS - \mu N$ & $K = \sum_i[T_i + V_i] - \sum_{ij}\beta_{ij}\KL_{ij}$ \\
+Chemical potential $\mu_j$ & Attention weight $\beta_{ij}$ \\
+Particle number $N_j$ & Information deficit $\KL_{ij}$ \\
+$\mu N$ coupling & Attention-weighted alignment $\sum_{ij}\beta_{ij}\KL_{ij}$ \\
+Temperature $T$ & Attention temperature $\kappa$ (set to 1) \\
+Partition function $Z$ & $\sum_k \exp(-\KL_{ik}/\kappa)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Local vs global perspective.} From the \emph{global} view, the transformer is a closed $N$-body system: $K_{\mathrm{total}} = \sum_i K_i = \text{constant}$ during the forward pass, with no energy entering or leaving. From the \emph{local} view, agent $i$ is in grand canonical contact with the reservoir of other agents $j \neq i$, exchanging ``information particles'' (probability mass, alignment) at rates set by $\beta_{ij}$.
+
+\paragraph{Self-consistent chemical equilibrium.} Unlike standard grand canonical systems where the chemical potential $\mu$ is fixed externally, here $\beta_{ij}$ is derived self-consistently from geometry:
+\begin{equation}
+\beta_{ij} = \mathrm{softmax}_j\left(-\frac{\KL_{ij}}{\kappa}\right)
+\end{equation}
+This represents chemical equilibrium---the system determines its own coupling strengths via maximum entropy over the divergence landscape. No free parameters beyond $\kappa$ (set to 1 in natural units where 1 nat = 1 unit of information cost).
+
+\paragraph{Energy accounting.} An agent can climb its local potential $V_i$ (move to a higher free energy configuration) if it improves alignment with neighbors (decreases $\sum_j \beta_{ij} \KL_{ij}$). Energy is borrowed from the coupling term: $\Delta V_i = \Delta(\sum_j \beta_{ij} \KL_{ij})$. States with good alignment can have higher local potential while maintaining the same total $K$.
+
+\paragraph{Equations of motion (explicit notation).} With momenta $\pip_\mu$ (conjugate to $\bm{\mu}$) and priors $p_i$ (embedding distributions):
+\begin{align}
+\dot{\bm{\mu}}_i &= \frac{\partial K}{\partial \pip_\mu} = M_i^{-1} \pip_\mu && \text{(velocity from momentum)} \\
+\dot{\pip}_\mu &= -\frac{\partial K}{\partial \bm{\mu}_i} = -\frac{\partial V_i}{\partial \bm{\mu}_i} + \frac{\partial}{\partial \bm{\mu}_i}\left(\sum_j \beta_{ij} \KL_{ij}\right) && \text{(force from potential + coupling)}
+\end{align}
+The second term in $\dot{\pip}_\mu$ is the ``reservoir force''---the influence of other agents, including both $\partial\KL/\partial\bm{\mu}$ and $(\partial\beta/\partial\bm{\mu})\cdot\KL$ (the latter being our emergent nonlinearity).
 
 \subsection{Limitations}
 
