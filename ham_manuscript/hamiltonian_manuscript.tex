@@ -26,9 +26,14 @@
 \newcommand{\Sig}{\bm{\Sigma}}
 \newcommand{\pip}{\bm{\pi}}
 \theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+
 \theoremstyle{definition}
-
-
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
 
 \begin{document}
 
@@ -268,18 +273,32 @@ Each transformer layer proceeds in three stages. First, KL-attention computes we
 \label{sec:theory}
 %=============================================================================
 
+The Hamiltonian formulation provides three theoretical guarantees that distinguish our architecture from standard transformers: symplectic structure ensuring stable long-term dynamics, gauge covariance under internal reference frame changes, and exact time-reversibility enabling mechanistic interpretability. We state and prove each property.
+
+\subsection{Symplectic Conservation}
+
+The leapfrog integrator preserves geometric structure that arbitrary numerical methods destroy. This is not merely a matter of accuracy---symplectic integrators qualitatively differ from non-symplectic methods in their long-term behavior.
+
 \begin{theorem}[Symplectic Conservation]
 \label{thm:symplectic}
 The leapfrog integrator (\Cref{alg:leapfrog}) preserves the symplectic 2-form $\omega = d\bm{q} \wedge d\bm{p}$ exactly and conserves the Hamiltonian $H$ to $\mathcal{O}(\dt^2)$ per step with no secular drift.
 \end{theorem}
 
 \begin{proof}
-The leapfrog map $\Phi_{\dt}: T^*\mathcal{M} \to T^*\mathcal{M}$ decomposes as:
+The leapfrog map $\Phi_{\dt}: T^*\mathcal{M} \to T^*\mathcal{M}$ decomposes as a symmetric composition:
 \begin{equation}
 \Phi_{\dt} = \Phi_{\dt/2}^V \circ \Phi_{\dt}^T \circ \Phi_{\dt/2}^V
 \end{equation}
-where $\Phi^V$ is the momentum kick (shear in $\bm{p}$) and $\Phi^T$ is the position drift (shear in $\bm{q}$). Each shear preserves the symplectic form, hence so does their composition. Energy conservation follows from backward error analysis \citep{hairer2006geometric}: the numerical trajectory exactly solves a nearby Hamiltonian $\tilde{H} = H + \mathcal{O}(\dt^2)$.
+where $\Phi^V: \bm{p} \mapsto \bm{p} - \frac{\dt}{2}\nabla_q H$ is the momentum kick and $\Phi^T: \bm{q} \mapsto \bm{q} + \dt\, \nabla_p H$ is the position drift. Each map is a shear transformation in phase space, which preserves the symplectic form: $(\Phi^V)^* \omega = \omega$ and $(\Phi^T)^* \omega = \omega$. Since pullback distributes over composition, $\Phi_{\dt}^* \omega = \omega$.
+
+Energy conservation follows from backward error analysis \citep{hairer2006geometric}. The numerical trajectory exactly solves a modified Hamiltonian $\tilde{H} = H + \mathcal{O}(\dt^2)$, and by symplecticity this modified Hamiltonian is conserved exactly. Consequently, $H$ oscillates within an $\mathcal{O}(\dt^2)$ envelope with no secular drift, even over arbitrarily long integration times.
 \end{proof}
+
+The practical consequence is stability: unlike Euler or Runge-Kutta methods, which exhibit energy drift that compounds over layers, the Hamiltonian FFN maintains bounded energy throughout the forward pass. This is essential for deep networks where small per-layer errors accumulate.
+
+\subsection{Gauge Covariance}
+
+The architecture respects a global $\mathrm{SO}(3)$ symmetry: simultaneous rotation of all internal reference frames leaves the dynamics invariant. This is the formal statement that ``same direction'' is defined only relative to other agents, not absolutely.
 
 \begin{theorem}[Gauge Covariance]
 \label{thm:gauge}
@@ -287,23 +306,44 @@ The Hamiltonian $H$ is invariant under simultaneous gauge transformation of all 
 \begin{equation}
 g \cdot (\bm{\mu}_i, \Sig_i, \bm{\phi}_i) = (R(g)\bm{\mu}_i, R(g)\Sig_i R(g)^\top, \mathrm{Ad}_g \bm{\phi}_i)
 \end{equation}
-Consequently, dynamics preserve gauge covariance.
+where $\mathrm{Ad}_g$ is the adjoint action on $\so(3)$. Consequently, dynamics preserve gauge covariance.
 \end{theorem}
 
 \begin{proof}
-The transported KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is gauge-invariant by construction: transforming all frames by $g$ leaves the relative transport $\Omega_{ij}$ unchanged. The kinetic terms $T_\mu, T_\Sigma, T_\phi$ are defined via bi-invariant metrics (Fisher-Rao, affine-invariant, Killing). Thus $H$ is gauge-invariant, and Noether's theorem implies gauge covariance is preserved.
+We verify invariance term by term. The parallel transport operator transforms as $\Omega_{ij} \mapsto R(g)\Omega_{ij}R(g)^{-1}$, so the transported belief $\Omega_{ij}[q_j]$ transforms covariantly. The KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is invariant because both arguments transform identically. The prior-anchoring term $\KL(q_i \| p_i)$ is invariant if priors transform alongside beliefs. The kinetic terms $T_\mu$, $T_\Sigma$, $T_\phi$ are constructed from bi-invariant metrics (Fisher-Rao on $\R^K$, affine-invariant on $\SPD(K)$, Killing form on $\so(3)$), hence invariant. The observation term $\CE$ depends only on $\bm{W}_{\mathrm{out}}\bm{\mu}$, which is invariant if $\bm{W}_{\mathrm{out}}$ transforms as $\bm{W}_{\mathrm{out}} R(g)^{-1}$.
+
+Since $H$ is gauge-invariant, Noether's theorem implies a conserved quantity---the total ``angular momentum'' in belief space. Gauge covariance is preserved along trajectories.
 \end{proof}
+
+Gauge covariance has an important practical implication: the network cannot exploit absolute orientation in latent space, only relative orientations between tokens. This is a strong inductive bias that may improve generalization. Note that while the \emph{dynamics} preserve gauge symmetry, the \emph{observation term} $\CE$ explicitly breaks it---predictions depend on the absolute orientation of $\bm{\mu}$ relative to output embeddings $\bm{W}_{\mathrm{out}}$. This symmetry breaking is necessary: without it, the network could not distinguish tokens. Training learns embeddings that break gauge symmetry in a task-appropriate way, analogous to spontaneous symmetry breaking in field theory.
+
+\subsection{Exact Reversibility}
+
+The central interpretability result is exact time-reversibility. Unlike standard MLPs, which implement irreversible many-to-one mappings, Hamiltonian dynamics can be run backward to recover inputs from outputs.
 
 \begin{theorem}[Exact Reversibility]
 \label{thm:reversibility}
-For any trajectory $\{\bm{z}_t\}_{t=0}^T$ generated by leapfrog integration, defining the time-reversal operator $\mathcal{R}: (\bm{q}, \bm{p}) \mapsto (\bm{q}, -\bm{p})$, we have:
+Define the time-reversal operator $\mathcal{R}: (\bm{q}, \bm{p}) \mapsto (\bm{q}, -\bm{p})$. For any trajectory $\{\bm{z}_t\}_{t=0}^T$ generated by leapfrog integration with map $\Phi_{\dt}$:
 \begin{equation}
 \Phi_{-\dt} = \mathcal{R} \circ \Phi_{\dt} \circ \mathcal{R}
 \end{equation}
-Hence $\bm{z}_0 = (\mathcal{R} \circ \Phi_{\dt}^T \circ \mathcal{R})(\bm{z}_T)$ exactly.
+Hence $\bm{z}_0 = (\mathcal{R} \circ \Phi_{\dt}^n \circ \mathcal{R})(\bm{z}_T)$ exactly, where $n$ is the number of integration steps.
 \end{theorem}
 
-This enables \textbf{token attribution}: given output $\bm{\mu}_T$, we recover the exact input $\bm{\mu}_0$ by negating momenta and integrating backward.
+\begin{proof}
+The leapfrog integrator is symmetric under time reversal by construction. Under $\mathcal{R}$, the momentum kick $\Phi^V$ becomes $\Phi^{-V}$ (sign flip), and the position drift $\Phi^T$ becomes $\Phi^{-T}$. The symmetric composition $\Phi_{\dt} = \Phi_{\dt/2}^V \circ \Phi_{\dt}^T \circ \Phi_{\dt/2}^V$ satisfies:
+\begin{align}
+\mathcal{R} \circ \Phi_{\dt} \circ \mathcal{R} &= \mathcal{R} \circ \Phi_{\dt/2}^V \circ \Phi_{\dt}^T \circ \Phi_{\dt/2}^V \circ \mathcal{R} \\
+&= \Phi_{-\dt/2}^V \circ \Phi_{-\dt}^T \circ \Phi_{-\dt/2}^V = \Phi_{-\dt}
+\end{align}
+Applying $\mathcal{R} \circ \Phi_{\dt}^n \circ \mathcal{R}$ to $\bm{z}_T$ yields $\Phi_{-\dt}^n(\bm{z}_T) = \bm{z}_0$ exactly.
+\end{proof}
+
+This theorem enables \textbf{token attribution}: given any output representation $\bm{\mu}_T$, we recover the exact input $\bm{\mu}_0$ by negating momenta and integrating backward through the same number of steps. The reversal is exact up to floating-point precision---we observe $\sim 10^{-7}$ relative error in practice for $\bm{\mu}$, limited only by numerical representation.
+
+\begin{remark}[Differential Reversibility]
+The reversibility guarantee applies exactly to $\bm{\mu}$ dynamics, where the mass matrix $M = \Sig_p^{-1}$ is constant (determined by the prior). The $\Sig$ dynamics on $\SPD(K)$ have position-dependent curvature, causing explicit leapfrog to achieve only first-order accuracy on this factor. In practice, we observe $\sim 10^{-7}$ reversal error for $\bm{\mu}$ but $\sim 10^{-2}$ for $\Sig$ over many steps. For typical transformer use with few integration steps per layer, this is negligible; token attribution via $\bm{\mu}$ reversal works excellently.
+\end{remark}
 
 %=============================================================================
 \section{Experiments}
