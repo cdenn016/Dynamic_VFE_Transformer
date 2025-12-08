@@ -439,6 +439,10 @@ class PublicationTrainer(FastTrainer):
             'kl_std': 0,
         }
 
+        # Carry over Hamiltonian diagnostics for physics metrics
+        if 'hamiltonian_diagnostics' in full_metrics:
+            metrics['hamiltonian_diagnostics'] = full_metrics['hamiltonian_diagnostics']
+
         return metrics, grad_norms
 
     def _compute_gradient_norms(self) -> Dict[str, float]:
@@ -581,6 +585,19 @@ class PublicationTrainer(FastTrainer):
         if self.pub_metrics:
             self.pub_metrics.save_all()
             self.pub_metrics.generate_all_figures()
+
+            # Generate interpretability outputs using a sample batch from validation
+            try:
+                sample_batch = next(iter(self.val_loader))
+                self.pub_metrics.generate_interpretability_outputs(
+                    model=self.model,
+                    sample_batch=sample_batch,
+                    tokenizer=None,  # Byte-level, no tokenizer needed
+                    device=self.device,
+                )
+            except Exception as e:
+                print(f"⚠ Could not generate interpretability outputs: {e}")
+
             self.pub_metrics.print_summary()
 
         # Summary

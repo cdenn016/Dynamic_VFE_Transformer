@@ -1143,6 +1143,10 @@ class PublicationFigureGenerator:
             ax2.bar(range(len(names)), bpcs, color=colors, edgecolor='black')
             ax2.set_xticks(range(len(names)))
             ax2.set_xticklabels(names, fontsize=8)
+        else:
+            ax2.text(0.5, 0.5, 'No ablation data\n(run with --run_ablation)',
+                    ha='center', va='center', transform=ax2.transAxes,
+                    fontsize=10, color='gray')
         ax2.set_ylabel('Validation BPC')
         ax2.set_title('(b) Mode Comparison')
         ax2.text(-0.1, 1.05, 'b', transform=ax2.transAxes, fontsize=16, fontweight='bold')
@@ -1155,10 +1159,14 @@ class PublicationFigureGenerator:
             ax3.semilogy(steps, delta_H, 'b-', alpha=0.7)
             ax3.axhline(y=np.mean(delta_H), color='r', linestyle='--',
                        label=f'Mean: {np.mean(delta_H):.2e}')
+            ax3.legend()
+        else:
+            ax3.text(0.5, 0.5, 'No physics data\n(requires hamiltonian mode)',
+                    ha='center', va='center', transform=ax3.transAxes,
+                    fontsize=10, color='gray')
         ax3.set_xlabel('Training Step')
         ax3.set_ylabel('|ΔH| (log scale)')
         ax3.set_title('(c) Hamiltonian Conservation')
-        ax3.legend()
         ax3.text(-0.1, 1.05, 'c', transform=ax3.transAxes, fontsize=16, fontweight='bold')
 
         # (d) Potential energy decomposition
@@ -1171,10 +1179,14 @@ class PublicationFigureGenerator:
                     label='V_align (belief)', alpha=0.7)
             ax4.plot(steps, [s.V_ce for s in physics_metrics.history],
                     label='V_ce (prediction)', alpha=0.7)
+            ax4.legend()
+        else:
+            ax4.text(0.5, 0.5, 'No physics data\n(requires hamiltonian mode)',
+                    ha='center', va='center', transform=ax4.transAxes,
+                    fontsize=10, color='gray')
         ax4.set_xlabel('Training Step')
         ax4.set_ylabel('Potential Energy')
         ax4.set_title('(d) Free Energy Components')
-        ax4.legend()
         ax4.text(-0.1, 1.05, 'd', transform=ax4.transAxes, fontsize=16, fontweight='bold')
 
         plt.suptitle('Gauge-Theoretic Hamiltonian Transformer: Main Results',
@@ -1214,10 +1226,14 @@ class PublicationFigureGenerator:
             H_final = [s.H_final for s in physics_metrics.history]
             ax1.plot(steps, H_init, 'b-', label='H_init', alpha=0.7)
             ax1.plot(steps, H_final, 'r-', label='H_final', alpha=0.7)
+            ax1.legend()
+        else:
+            ax1.text(0.5, 0.5, 'No Hamiltonian data\n(requires hamiltonian mode)',
+                    ha='center', va='center', transform=ax1.transAxes,
+                    fontsize=10, color='gray')
         ax1.set_xlabel('Step')
         ax1.set_ylabel('Hamiltonian')
         ax1.set_title('(a) Hamiltonian Values')
-        ax1.legend()
 
         # (b) dt scaling
         ax2 = fig.add_subplot(gs[0, 1])
@@ -1229,10 +1245,14 @@ class PublicationFigureGenerator:
             scale = delta_H[len(dt)//2] / (dt[len(dt)//2]**2)
             dt_ref = np.logspace(np.log10(dt.min()), np.log10(dt.max()), 50)
             ax2.loglog(dt_ref, scale * dt_ref**2, 'g--', label='O(dt²)')
+            ax2.legend()
+        else:
+            ax2.text(0.5, 0.5, 'No dt scaling data\n(run separate scaling study)',
+                    ha='center', va='center', transform=ax2.transAxes,
+                    fontsize=10, color='gray')
         ax2.set_xlabel('Time step dt')
         ax2.set_ylabel('|ΔH|')
         ax2.set_title('(b) Symplectic Scaling')
-        ax2.legend()
 
         # (c) ΔH distribution
         ax3 = fig.add_subplot(gs[1, 0])
@@ -1241,10 +1261,14 @@ class PublicationFigureGenerator:
             ax3.hist(delta_H, bins=50, edgecolor='black', alpha=0.7)
             ax3.axvline(x=np.mean(delta_H), color='r', linestyle='--',
                        label=f'Mean: {np.mean(delta_H):.2e}')
+            ax3.legend()
+        else:
+            ax3.text(0.5, 0.5, 'No energy error data\n(requires hamiltonian mode)',
+                    ha='center', va='center', transform=ax3.transAxes,
+                    fontsize=10, color='gray')
         ax3.set_xlabel('|ΔH|')
         ax3.set_ylabel('Count')
         ax3.set_title('(c) Energy Error Distribution')
-        ax3.legend()
 
         # (d) SPD eigenvalues
         ax4 = fig.add_subplot(gs[1, 1])
@@ -1253,10 +1277,14 @@ class PublicationFigureGenerator:
             spd_min = [s.spd_eigenvalue_min for s in physics_metrics.history]
             ax4.semilogy(steps, spd_min, 'g-', alpha=0.7)
             ax4.axhline(y=0, color='r', linestyle='--', label='Zero (violation)')
+            ax4.legend()
+        else:
+            ax4.text(0.5, 0.5, 'No SPD data\n(requires hamiltonian mode)',
+                    ha='center', va='center', transform=ax4.transAxes,
+                    fontsize=10, color='gray')
         ax4.set_xlabel('Step')
         ax4.set_ylabel('Min Eigenvalue (log)')
         ax4.set_title('(d) SPD Manifold Preservation')
-        ax4.legend()
 
         plt.suptitle('Physics Validation: Symplectic Structure', fontsize=16, y=1.02)
 
@@ -1380,6 +1408,113 @@ class PublicationMetrics:
         )
 
         print(f"📈 All figures saved to {self.experiment_dir}/figures/")
+
+    def generate_interpretability_outputs(
+        self,
+        model: nn.Module,
+        sample_batch: Tuple[torch.Tensor, torch.Tensor],
+        tokenizer=None,
+        device: torch.device = None,
+    ):
+        """
+        Generate interpretability outputs using the trained model.
+
+        Args:
+            model: Trained model
+            sample_batch: (input_ids, target_ids) sample batch for analysis
+            tokenizer: Optional tokenizer for decoding tokens
+            device: Device to use for computation
+        """
+        if device is None:
+            device = next(model.parameters()).device
+
+        input_ids, target_ids = sample_batch
+        input_ids = input_ids.to(device)
+        target_ids = target_ids.to(device)
+
+        model.eval()
+
+        with torch.no_grad():
+            # Get model forward pass with attention info
+            if hasattr(model, 'forward_with_attention'):
+                logits, attn_info = model.forward_with_attention(input_ids, targets=target_ids)
+                beta = attn_info.get('beta')
+                mu = attn_info.get('mu')
+                sigma = attn_info.get('sigma')
+
+                # Analyze attention flow
+                if beta is not None:
+                    flow_analysis = self.interpretability.analyze_attention_flow(beta)
+
+                    # Save attention analysis
+                    attention_summary = {
+                        'mean_entropy': flow_analysis['mean_entropy'],
+                        'mean_concentration': flow_analysis['mean_concentration'],
+                    }
+                    with open(self.interpretability.save_dir / 'attention_analysis.json', 'w') as f:
+                        json.dump(attention_summary, f, indent=2)
+
+                    # Generate attention heatmap
+                    self._plot_attention_heatmap(
+                        beta,
+                        input_ids,
+                        tokenizer,
+                        save_name=f"{self.experiment_name}_attention"
+                    )
+
+                print(f"🔍 Interpretability outputs saved to {self.interpretability.save_dir}/")
+            else:
+                print("⚠ Model doesn't support forward_with_attention, skipping interpretability")
+
+    def _plot_attention_heatmap(
+        self,
+        beta: torch.Tensor,
+        input_ids: torch.Tensor,
+        tokenizer=None,
+        save_name: str = "attention_heatmap",
+    ):
+        """Plot attention heatmap."""
+        # Average over batch and heads
+        if beta.dim() == 4:  # (B, H, N, N)
+            attn = beta[0].mean(dim=0).cpu().numpy()  # First batch, avg heads
+        else:  # (B, N, N)
+            attn = beta[0].cpu().numpy()
+
+        N = attn.shape[0]
+
+        # Get token labels
+        if tokenizer is not None:
+            try:
+                tokens = [tokenizer.decode([t.item()]) for t in input_ids[0]]
+            except Exception:
+                tokens = [str(i) for i in range(N)]
+        else:
+            tokens = [str(i) for i in range(N)]
+
+        # Truncate long labels
+        tokens = [t[:8] if len(t) > 8 else t for t in tokens]
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        im = ax.imshow(attn, cmap='Blues', aspect='auto')
+
+        ax.set_xticks(range(min(N, 32)))
+        ax.set_yticks(range(min(N, 32)))
+
+        if N <= 32:
+            ax.set_xticklabels(tokens[:32], rotation=45, ha='right', fontsize=8)
+            ax.set_yticklabels(tokens[:32], fontsize=8)
+
+        ax.set_xlabel('Key Position')
+        ax.set_ylabel('Query Position')
+        ax.set_title('Attention Weights (averaged over heads)')
+
+        plt.colorbar(im, ax=ax, label='Attention Weight')
+
+        plt.tight_layout()
+        fig.savefig(self.interpretability.save_dir / f"{save_name}.png", dpi=150, bbox_inches='tight')
+        fig.savefig(self.interpretability.save_dir / f"{save_name}.pdf", bbox_inches='tight')
+        plt.close(fig)
 
     def print_summary(self):
         """Print summary of all metrics."""
