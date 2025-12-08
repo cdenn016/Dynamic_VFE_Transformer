@@ -559,11 +559,13 @@ Partition function $Z$ & $\sum_k \exp(-\KL_{ik}/\kappa)$ \\
 
 \paragraph{Local vs global perspective.} From the \emph{global} view, the transformer is a closed $N$-body system: $K_{\mathrm{total}} = \sum_i K_i = \text{constant}$ during the forward pass, with no energy entering or leaving. From the \emph{local} view, agent $i$ is in grand canonical contact with the reservoir of other agents $j \neq i$, exchanging ``information particles'' (probability mass, alignment) at rates set by $\beta_{ij}$.
 
-\paragraph{Self-consistent chemical equilibrium.} Unlike standard grand canonical systems where the chemical potential $\mu$ is fixed externally, here $\beta_{ij}$ is derived self-consistently from geometry:
+\paragraph{Negative chemical potential.} The coupling term $-\sum_{ij}\beta_{ij}\KL_{ij}$ can be written as $+\sum_{ij}\mu_{ij}\KL_{ij}$ where $\mu_{ij} = -\beta_{ij} < 0$. Negative chemical potential is physically meaningful (cf.\ bosons, where $\mu \leq 0$). Here it means divergence is thermodynamically disfavored: agents tend toward alignment in the absence of differentiating observations. Observations break this degeneracy, forcing differentiation.
+
+\paragraph{Self-consistent chemical equilibrium.} Unlike standard grand canonical systems where $\mu$ is fixed externally, here $\beta_{ij}$ emerges self-consistently from geometry:
 \begin{equation}
 \beta_{ij} = \mathrm{softmax}_j\left(-\frac{\KL_{ij}}{\kappa}\right)
 \end{equation}
-This represents chemical equilibrium---the system determines its own coupling strengths via maximum entropy over the divergence landscape. No free parameters beyond $\kappa$ (set to 1 in natural units where 1 nat = 1 unit of information cost).
+This is chemical equilibrium---the system determines its own coupling strengths via maximum entropy over the divergence landscape. No free parameters beyond $\kappa$ (set to 1 in natural units where 1 nat = 1 unit of information cost).
 
 \paragraph{Energy accounting.} An agent can climb its local potential $V_i$ (move to a higher free energy configuration) if it improves alignment with neighbors (decreases $\sum_j \beta_{ij} \KL_{ij}$). Energy is borrowed from the coupling term: $\Delta V_i = \Delta(\sum_j \beta_{ij} \KL_{ij})$. States with good alignment can have higher local potential while maintaining the same total $K$.
 
