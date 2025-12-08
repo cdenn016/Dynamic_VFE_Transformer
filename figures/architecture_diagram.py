@@ -77,122 +77,122 @@ def draw_math_box(ax, x, y, text, fontsize=8):
 def create_vfe_architecture(ax):
     """Create the Gauge-VFE architecture diagram."""
     ax.set_xlim(-0.5, 10.5)
-    ax.set_ylim(-1, 8)
+    ax.set_ylim(-1.5, 8.5)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title('(a) Gauge-VFE Transformer', fontsize=12, fontweight='bold', pad=10)
 
     # Input layer
-    draw_rounded_box(ax, 1.5, 7, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
-    ax.text(1.5, 6.1, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
+    draw_rounded_box(ax, 1.5, 7.5, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
+    ax.text(1.5, 6.6, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
 
     # Transformer block (repeated)
     block_y = 4.5
 
     # Attention
-    draw_rounded_box(ax, 5, block_y + 1.5, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
-    draw_math_box(ax, 5, block_y + 0.5, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}(q_i \| \Omega_{ij}[q_j])/\kappa)$')
+    draw_rounded_box(ax, 5, block_y + 1.8, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
+    draw_math_box(ax, 5, block_y + 0.7, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}/\kappa)$')
 
     # VFE FFN
-    draw_rounded_box(ax, 5, block_y - 1.2, 3.5, 0.8, 'VFE Descent FFN', COLORS['ffn_vfe'])
-    draw_math_box(ax, 5, block_y - 2.2, r'$\mu \leftarrow \mu - \eta \nabla_\mu F$')
+    draw_rounded_box(ax, 5, block_y - 0.8, 3.5, 0.8, 'VFE Descent FFN', COLORS['ffn_vfe'])
+    draw_math_box(ax, 5, block_y - 1.9, r'$\mu \leftarrow \mu - \eta \nabla_\mu F$')
 
     # Free energy equation
-    ax.text(5, block_y - 3.2,
-            r'$F = \alpha \cdot \mathrm{KL}(q\|p) + \lambda_\beta \sum_{ij} \beta_{ij} \mathrm{KL}(q_i\|\Omega_{ij}[q_j]) + \mathrm{CE}$',
+    ax.text(5, block_y - 3.0,
+            r'$F = \alpha \mathrm{KL}(q\|p) + \lambda_\beta \sum \beta_{ij} \mathrm{KL} + \mathrm{CE}$',
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
 
     # Output
-    draw_rounded_box(ax, 5, 0.5, 2.5, 0.7, 'Output Proj', COLORS['output'])
-    ax.text(5, -0.3, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
+    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'])
+    ax.text(5, -0.6, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
 
     # Arrows
-    draw_arrow(ax, (1.5, 6.6), (1.5, 5.5))
-    ax.annotate('', xy=(3.2, 5.5), xytext=(1.5, 5.5),
+    draw_arrow(ax, (1.5, 7.1), (1.5, 6.0))
+    ax.annotate('', xy=(3.2, 6.0), xytext=(1.5, 6.0),
                 arrowprops=dict(arrowstyle='->', color=COLORS['arrow'], lw=1.5))
-    draw_arrow(ax, (3.2, 5.5), (3.2, block_y + 1.5))
-    draw_arrow(ax, (5, block_y + 1.1), (5, block_y + 0.9))
-    draw_arrow(ax, (5, block_y + 0.1), (5, block_y - 0.8))
-    draw_arrow(ax, (5, block_y - 1.6), (5, block_y - 1.8))
-    draw_arrow(ax, (5, block_y - 2.7), (5, 0.9))
+    draw_arrow(ax, (3.2, 6.0), (3.2, block_y + 1.8))
+    draw_arrow(ax, (5, block_y + 1.4), (5, block_y + 1.1))
+    draw_arrow(ax, (5, block_y + 0.3), (5, block_y - 0.4))
+    draw_arrow(ax, (5, block_y - 1.2), (5, block_y - 1.5))
+    draw_arrow(ax, (5, block_y - 3.4), (5, 0.6))
 
     # Residual connection
-    ax.annotate('', xy=(7.5, block_y - 1.2), xytext=(7.5, block_y + 1.5),
+    ax.annotate('', xy=(7.5, block_y - 0.8), xytext=(7.5, block_y + 1.8),
                 arrowprops=dict(arrowstyle='->', color='gray', lw=1,
                                connectionstyle='arc3,rad=-0.3', ls='--'))
-    ax.text(8.2, block_y + 0.2, '+', fontsize=12, color='gray')
+    ax.text(8.2, block_y + 0.5, '+', fontsize=12, color='gray')
 
     # Block label
-    ax.add_patch(Rectangle((2.8, block_y - 2.8), 4.4, 5,
+    ax.add_patch(Rectangle((2.8, block_y - 3.3), 4.4, 5.8,
                            fill=False, edgecolor='gray', linestyle='--', linewidth=1))
-    ax.text(2.9, block_y + 2.1, '×L layers', fontsize=8, color='gray')
+    ax.text(2.9, block_y + 2.4, '×L layers', fontsize=8, color='gray')
 
 
 def create_hamiltonian_architecture(ax):
     """Create the Gauge-Hamiltonian architecture diagram."""
     ax.set_xlim(-0.5, 10.5)
-    ax.set_ylim(-1, 8)
+    ax.set_ylim(-1.5, 8.5)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title('(b) Gauge-Hamiltonian Transformer', fontsize=12, fontweight='bold', pad=10)
 
     # Input layer
-    draw_rounded_box(ax, 1.5, 7, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
-    ax.text(1.5, 6.1, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
+    draw_rounded_box(ax, 1.5, 7.5, 2.5, 0.7, 'Token Embedding', COLORS['embedding'])
+    ax.text(1.5, 6.6, r'$\mu_p, \Sigma_p, \phi_p$', ha='center', fontsize=9, color=COLORS['math'])
 
     # Transformer block
     block_y = 4.5
 
     # Attention (same as VFE)
-    draw_rounded_box(ax, 5, block_y + 1.5, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
-    draw_math_box(ax, 5, block_y + 0.5, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}(q_i \| \Omega_{ij}[q_j])/\kappa)$')
+    draw_rounded_box(ax, 5, block_y + 1.8, 3.5, 0.8, 'KL-Attention', COLORS['attention'])
+    draw_math_box(ax, 5, block_y + 0.7, r'$\beta_{ij} = \mathrm{softmax}(-\mathrm{KL}/\kappa)$')
 
     # Hamiltonian FFN
-    draw_rounded_box(ax, 5, block_y - 1.2, 3.5, 0.8, 'Leapfrog FFN', COLORS['ffn_ham'], text_color='black')
+    draw_rounded_box(ax, 5, block_y - 0.8, 3.5, 0.8, 'Leapfrog FFN', COLORS['ffn_ham'], text_color='black')
 
-    # Hamiltonian equations
-    ax.text(5, block_y - 2.1,
+    # Hamiltonian equations - spread out more
+    ax.text(5, block_y - 1.9,
             r'$\dot{q} = \partial H/\partial p$,  $\dot{p} = -\partial H/\partial q$',
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
 
-    # Hamiltonian definition (simplified - no \underbrace)
-    ax.text(5, block_y - 2.8,
-            r'$H = T_\mu + T_\Sigma + T_\phi + F(\mu,\Sigma,\phi)$',
+    # Hamiltonian definition
+    ax.text(5, block_y - 2.7,
+            r'$H = T_\mu + T_\Sigma + T_\phi + F$',
             ha='center', fontsize=8, color=COLORS['math'], style='italic')
-    ax.text(5, block_y - 3.4,
-            r'(Kinetic)          (Potential)',
+    ax.text(5, block_y - 3.2,
+            r'(Kinetic)    (Potential)',
             ha='center', fontsize=7, color='gray')
 
     # Energy conservation badge
-    ax.text(8.5, block_y - 1.2, r'$\Delta H \approx 0$', fontsize=8,
+    ax.text(8.5, block_y - 0.8, r'$\Delta H \approx 0$', fontsize=8,
             color='white', ha='center', va='center',
             bbox=dict(boxstyle='round,pad=0.2', facecolor=COLORS['ffn_ham'],
                      edgecolor='black', linewidth=0.8))
 
     # Output
-    draw_rounded_box(ax, 5, 0.5, 2.5, 0.7, 'Output Proj', COLORS['output'])
-    ax.text(5, -0.3, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
+    draw_rounded_box(ax, 5, 0.2, 2.5, 0.7, 'Output Proj', COLORS['output'])
+    ax.text(5, -0.6, r'logits $= W_{out} \mu$', ha='center', fontsize=9, color=COLORS['math'])
 
     # Arrows
-    draw_arrow(ax, (1.5, 6.6), (1.5, 5.5))
-    ax.annotate('', xy=(3.2, 5.5), xytext=(1.5, 5.5),
+    draw_arrow(ax, (1.5, 7.1), (1.5, 6.0))
+    ax.annotate('', xy=(3.2, 6.0), xytext=(1.5, 6.0),
                 arrowprops=dict(arrowstyle='->', color=COLORS['arrow'], lw=1.5))
-    draw_arrow(ax, (3.2, 5.5), (3.2, block_y + 1.5))
-    draw_arrow(ax, (5, block_y + 1.1), (5, block_y + 0.9))
-    draw_arrow(ax, (5, block_y + 0.1), (5, block_y - 0.8))
-    draw_arrow(ax, (5, block_y - 1.6), (5, block_y - 1.8))
-    draw_arrow(ax, (5, block_y - 3.8), (5, 0.9))
+    draw_arrow(ax, (3.2, 6.0), (3.2, block_y + 1.8))
+    draw_arrow(ax, (5, block_y + 1.4), (5, block_y + 1.1))
+    draw_arrow(ax, (5, block_y + 0.3), (5, block_y - 0.4))
+    draw_arrow(ax, (5, block_y - 1.2), (5, block_y - 1.5))
+    draw_arrow(ax, (5, block_y - 3.5), (5, 0.6))
 
     # Residual
-    ax.annotate('', xy=(7.5, block_y - 1.2), xytext=(7.5, block_y + 1.5),
+    ax.annotate('', xy=(7.5, block_y - 0.8), xytext=(7.5, block_y + 1.8),
                 arrowprops=dict(arrowstyle='->', color='gray', lw=1,
                                connectionstyle='arc3,rad=-0.3', ls='--'))
-    ax.text(8.2, block_y + 0.2, '+', fontsize=12, color='gray')
+    ax.text(8.2, block_y + 0.5, '+', fontsize=12, color='gray')
 
     # Block label
-    ax.add_patch(Rectangle((2.8, block_y - 3.9), 4.4, 6.1,
+    ax.add_patch(Rectangle((2.8, block_y - 3.4), 4.4, 5.9,
                            fill=False, edgecolor='gray', linestyle='--', linewidth=1))
-    ax.text(2.9, block_y + 2.1, '×L layers', fontsize=8, color='gray')
+    ax.text(2.9, block_y + 2.4, '×L layers', fontsize=8, color='gray')
 
 
 def create_manifold_diagram(ax):
@@ -265,10 +265,11 @@ def create_manifold_diagram(ax):
 
 def create_full_figure():
     """Create the complete figure with all panels."""
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(14, 12))
 
-    # Create grid
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.8], hspace=0.3, wspace=0.2)
+    # Create grid with more space for bottom panel and caption
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.7], hspace=0.35, wspace=0.2,
+                          top=0.92, bottom=0.12)
 
     # Top row: architectures
     ax1 = fig.add_subplot(gs[0, 0])
@@ -284,15 +285,15 @@ def create_full_figure():
 
     # Main title
     fig.suptitle('Gauge Transformer Architectures: VFE vs Hamiltonian Dynamics',
-                 fontsize=14, fontweight='bold', y=0.98)
+                 fontsize=14, fontweight='bold', y=0.96)
 
-    # Add caption
+    # Add caption with proper spacing
     caption = (
         "Both architectures use KL-divergence based attention with gauge-equivariant parallel transport.\n"
         "VFE descent minimizes free energy via gradient flow. Hamiltonian dynamics conserves energy via symplectic integration.\n"
         "The self-consistency term KL(q||p) anchors beliefs to embedding priors, enabling gradient flow to learn embeddings."
     )
-    fig.text(0.5, 0.02, caption, ha='center', fontsize=9, style='italic',
+    fig.text(0.5, 0.03, caption, ha='center', fontsize=9, style='italic',
              wrap=True, color='gray')
 
     return fig
