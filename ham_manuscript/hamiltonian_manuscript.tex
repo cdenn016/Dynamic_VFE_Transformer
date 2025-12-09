@@ -462,7 +462,8 @@ The reversibility guarantee applies exactly to $\bm{\mu}$ dynamics, where the ma
 \begin{itemize}
 \item \textbf{Standard Transformer}: Vaswani-style with learned $\bm{W}_Q, \bm{W}_K, \bm{W}_V, \bm{W}_O$ and MLP FFN
 \item \textbf{Gauge-VFE Transformer}: KL-attention + gradient descent FFN on free energy
-\item \textbf{Gauge-Hamiltonian Transformer}: KL-attention + leapfrog FFN (this work)
+\item \textbf{Gauge-Hamiltonian Transformer}: KL-attention + leapfrog FFN ($\gamma = 0$)
+\item \textbf{Gauge-Langevin Transformer}: KL-attention + BAOAB FFN ($\gamma > 0$, $T > 0$)
 \end{itemize}
 All models parameter-matched to $\sim$[TBD] parameters.
 
@@ -477,15 +478,16 @@ All models parameter-matched to $\sim$[TBD] parameters.
 \centering
 \caption{Language modeling performance on WikiText-2 (byte-level). Results pending RTX 5090 experiments.}
 \label{tab:main_results}
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-\textbf{Model} & \textbf{Params} & \textbf{Val PPL} & \textbf{Val BPC} & \textbf{FFN Params} \\
+\textbf{Model} & \textbf{Params} & \textbf{Val PPL} & \textbf{Val BPC} & \textbf{FFN Params} & \textbf{Reversible?} \\
 \midrule
-Standard Transformer & [TBD] & [TBD] & [TBD] & $8K \cdot d_{\mathrm{ff}}$ \\
-Gauge-VFE & [TBD] & [TBD] & [TBD] & $\sim 4$ \\
-\textbf{Gauge-Hamiltonian} & [TBD] & [TBD] & [TBD] & \textbf{0} \\
+Standard Transformer & [TBD] & [TBD] & [TBD] & $8K \cdot d_{\mathrm{ff}}$ & No \\
+Gauge-VFE & [TBD] & [TBD] & [TBD] & $\sim 4$ & No \\
+Gauge-Hamiltonian & [TBD] & [TBD] & [TBD] & \textbf{0} & \textbf{Yes} \\
+\textbf{Gauge-Langevin} & [TBD] & [TBD] & [TBD] & \textbf{0} & Approx. \\
 \midrule
-\multicolumn{5}{l}{\emph{Preliminary small-scale results indicate comparable performance across all three.}} \\
+\multicolumn{6}{l}{\emph{Preliminary results suggest Langevin variant outperforms pure Hamiltonian.}} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -577,6 +579,49 @@ M_i \ddot{\mu}_i + \gamma_i \dot{\mu}_i + \nabla_{\mu_i} \F = 0
 where $\gamma_i > 0$ is a damping coefficient. This equation predicts three dynamical regimes. In the \emph{overdamped} regime ($\gamma > 2\sqrt{KM}$), beliefs decay monotonically to equilibrium, recovering standard gradient descent and Bayesian updating. At \emph{critical damping} ($\gamma = 2\sqrt{KM}$), beliefs approach equilibrium as fast as possible without oscillation. In the \emph{underdamped} regime ($\gamma < 2\sqrt{KM}$), beliefs oscillate around equilibrium, transiently moving \emph{away} from the minimum before eventually settling.
 
 Our pure Hamiltonian implementation ($\gamma = 0$) operates at the underdamped extreme, where beliefs orbit the free energy minimum indefinitely. This may seem undesirable for convergence, but provides two benefits: exact reversibility for interpretability, and exploration of the energy landscape beyond local minima.
+
+\subsection{Langevin Dynamics: Stochastic Belief Evolution}
+\label{sec:langevin}
+
+While the pure Hamiltonian FFN offers exact reversibility, preliminary experiments suggest that a \emph{Langevin} variant achieves superior language modeling performance by incorporating controlled dissipation and thermal fluctuations. The Langevin equation extends the damped oscillator (\Cref{eq:damped_oscillator}) with a stochastic forcing term that satisfies the fluctuation-dissipation theorem:
+\begin{equation}
+M_i \ddot{\bm{\mu}}_i + \gamma \dot{\bm{\mu}}_i + \nabla_{\bm{\mu}_i} \F = \sqrt{2\gamma k_B T}\, \bm{\xi}(t)
+\label{eq:langevin}
+\end{equation}
+where $\bm{\xi}(t)$ is Gaussian white noise with $\langle \bm{\xi}(t) \rangle = 0$ and $\langle \xi_a(t) \xi_b(t') \rangle = \delta_{ab}\delta(t - t')$. The temperature $T$ controls the magnitude of fluctuations, with higher temperatures enabling broader exploration of the free energy landscape.
+
+In first-order form suitable for numerical integration, the Langevin dynamics become:
+\begin{align}
+\dot{\bm{\mu}}_i &= M_i^{-1} \pip_\mu \label{eq:langevin_mu}\\
+\dot{\pip}_\mu &= -\nabla_{\bm{\mu}_i}\F - \gamma M_i^{-1}\pip_\mu + \sqrt{2\gamma k_B T}\, \bm{\xi}(t) \label{eq:langevin_pi}
+\end{align}
+The friction term $-\gamma M_i^{-1}\pip_\mu$ dissipates kinetic energy, while the noise term injects energy at a rate that---at equilibrium---precisely balances dissipation. This is the fluctuation-dissipation theorem: the same coefficient $\gamma$ governs both processes, ensuring convergence to the Boltzmann distribution $p(\bm{\mu}, \pip) \propto \exp(-H/k_B T)$.
+
+\paragraph{BAOAB integrator.} We integrate \Cref{eq:langevin_mu,eq:langevin_pi} using the BAOAB splitting scheme \citep{leimkuhler2013rational}, which achieves excellent sampling properties:
+\begin{align}
+\pip &\gets \pip - \frac{\dt}{2}\nabla_\mu \F && \text{(B: half-kick)} \nonumber\\
+\pip &\gets e^{-\gamma\dt/2}\pip + \sqrt{k_B T(1 - e^{-\gamma\dt})M}\,\bm{\eta} && \text{(A: friction + noise)} \nonumber\\
+\bm{\mu} &\gets \bm{\mu} + \dt\, M^{-1}\pip && \text{(O: drift)} \nonumber\\
+\pip &\gets e^{-\gamma\dt/2}\pip + \sqrt{k_B T(1 - e^{-\gamma\dt})M}\,\bm{\eta}' && \text{(A: friction + noise)} \nonumber\\
+\pip &\gets \pip - \frac{\dt}{2}\nabla_\mu \F && \text{(B: half-kick)}
+\end{align}
+where $\bm{\eta}, \bm{\eta}'$ are independent standard Gaussian vectors. The symmetric BAO-AB structure ensures second-order accuracy for configurational averages.
+
+\paragraph{Physical interpretation.} The Langevin FFN models beliefs as Brownian particles in the free energy landscape. Friction causes beliefs to drift toward low-energy configurations (like gradient descent), while thermal noise prevents premature convergence to shallow local minima. The temperature $T$ interpolates between two limits:
+\begin{itemize}
+\item $T \to 0$: Deterministic damped dynamics, converging to nearest local minimum
+\item $T \to \infty$: Diffusive exploration, ignoring the energy landscape entirely
+\end{itemize}
+An intermediate temperature balances exploitation (following gradients) with exploration (escaping local traps).
+
+\paragraph{Connection to stochastic gradient descent.} In the overdamped limit ($\gamma \to \infty$ with $\gamma^{-1}M$ finite), \Cref{eq:langevin} reduces to:
+\begin{equation}
+\dot{\bm{\mu}}_i = -\tilde{M}_i^{-1}\nabla_{\bm{\mu}_i}\F + \sqrt{2\tilde{M}_i^{-1}k_B T}\,\bm{\xi}(t)
+\label{eq:overdamped_langevin}
+\end{equation}
+This is gradient descent with additive Gaussian noise---precisely the dynamics implicitly induced by stochastic gradient descent with mini-batches \citep{mandt2017stochastic}. The Langevin FFN thus connects Hamiltonian mechanics to the stochastic optimization that underlies neural network training, with the mass matrix $M_i$ (Fisher information) playing the role of a preconditioner.
+
+\paragraph{Trade-offs.} The Langevin extension sacrifices exact reversibility for improved convergence. Running the dynamics backward does not recover the initial state because the noise realizations $\bm{\xi}(t)$ are not stored. However, \emph{statistical} reversibility holds: the equilibrium distribution satisfies detailed balance, and time-reversed trajectories are statistically indistinguishable from forward trajectories. For interpretability, one can still approximately invert the \emph{deterministic} component of the dynamics by setting $T = 0$ during backward integration, though this introduces reconstruction error proportional to the accumulated stochastic perturbations.
 
 \subsection{The Pendulum Analogy}
 
@@ -780,19 +825,23 @@ This Hessian is exactly the Fisher information matrix of the categorical distrib
 
 \begin{table}[h]
 \centering
-\caption{Default hyperparameters for Hamiltonian FFN.}
-\begin{tabular}{lcc}
+\caption{Default hyperparameters for Hamiltonian and Langevin FFN variants.}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Parameter} & \textbf{Symbol} & \textbf{Default} \\
+\textbf{Parameter} & \textbf{Symbol} & \textbf{Hamiltonian} & \textbf{Langevin} \\
 \midrule
-Leapfrog timestep & $\dt$ & 0.01 \\
-Integration steps & $n_{\mathrm{steps}}$ & 10 \\
-Initial momentum scale & $\sigma_\pi$ & 0.5 \\
-Damping coefficient & $\gamma$ & 0.0 \\
-Self-coupling weight & $\alpha$ & 1.0 \\
-Alignment weight & $\lambda_\beta$ & 0.5 \\
-Attention temperature & $\kappa$ & 1.0 \\
-Observation temperature & $\tau$ & 1.0 \\
+Timestep & $\dt$ & 0.01 & 0.01 \\
+Integration steps & $n_{\mathrm{steps}}$ & 10 & 10 \\
+Initial momentum scale & $\sigma_\pi$ & 0.5 & 0.5 \\
+Friction coefficient & $\gamma$ & 0.0 & 1.0 \\
+Thermal temperature & $k_B T$ & --- & 0.1 \\
+Self-coupling weight & $\alpha$ & 1.0 & 1.0 \\
+Alignment weight & $\lambda_\beta$ & 0.5 & 0.5 \\
+Attention temperature & $\kappa$ & 1.0 & 1.0 \\
+Observation temperature & $\tau$ & 1.0 & 1.0 \\
+\midrule
+Integrator & & Leapfrog & BAOAB \\
+Reversible & & Exact & Statistical \\
 \bottomrule
 \end{tabular}
 \end{table}
