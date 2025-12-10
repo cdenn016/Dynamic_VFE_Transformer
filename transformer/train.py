@@ -464,9 +464,9 @@ class Trainer:
         # Learning rate scheduler
         self.scheduler = self._create_scheduler()
 
-        # Mixed precision scaler
+        # Mixed precision scaler (using modern AMP API for PyTorch 2.x / CUDA 12+)
         if self.config.use_amp and self.config.device == 'cuda':
-            self.scaler = torch.cuda.amp.GradScaler()
+            self.scaler = torch.amp.GradScaler('cuda')
         else:
             self.scaler = None
 
@@ -673,7 +673,7 @@ class Trainer:
         targets = targets.to(self.device)
 
         # Forward + loss
-        with torch.cuda.amp.autocast(enabled=(self.scaler is not None)):
+        with torch.amp.autocast('cuda', enabled=(self.scaler is not None)):
             loss, metrics = compute_free_energy_loss(
                 self.model,
                 token_ids,

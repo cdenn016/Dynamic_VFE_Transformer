@@ -184,13 +184,18 @@ def compute_attention_weights(
     # Compute all pairwise KL divergences: KL(q_i || Ω_ij[q_j])
     # =========================================================================
 
-    if use_numba and NUMBA_AVAILABLE and TRANSPORT_AVAILABLE:
-        # Fast path: Use Numba kernels
+    # CRITICAL: Never use Numba path on CUDA devices!
+    # Numba kernels are CPU-only and would cause GPU→CPU→GPU transfer bottleneck.
+    # The PyTorch path is fully vectorized and runs efficiently on GPU.
+    is_cuda = device.type == 'cuda'
+
+    if use_numba and NUMBA_AVAILABLE and TRANSPORT_AVAILABLE and not is_cuda:
+        # Fast path: Use Numba kernels (CPU only)
         _compute_kl_matrix_numba(
             mu_q, sigma_q, phi, generators, kl_matrix
         )
     else:
-        # Fallback: Pure PyTorch
+        # GPU path OR CPU fallback: Pure PyTorch (fully vectorized, CUDA-compatible)
         _compute_kl_matrix_torch(
             mu_q, sigma_q, phi, generators, kl_matrix
         )

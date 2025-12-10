@@ -50,6 +50,70 @@ The `spd_kinetic_gradient` correction improves but doesn't achieve exact symplec
 - Token attribution examples showing input→output causal chains
 - Compare with Vaswani baseline to demonstrate interpretability advantage
 
+## CUDA Compatibility (RTX 5090 / Blackwell Ready)
+
+The codebase is **fully CUDA-compatible** as of December 2025. Key notes:
+
+### What Works on GPU
+
+| Module | CUDA Status | Notes |
+|--------|-------------|-------|
+| `model.py` | Full | Standard PyTorch nn.Module |
+| `hamiltonian_ffn.py` | Full | Uses `torch.linalg.matrix_exp`, `torch.linalg.eigh` |
+| `attention.py` | Full | Vectorized PyTorch path auto-selected on CUDA |
+| `embeddings.py` | Full | Standard `nn.Embedding`, `register_buffer` |
+| `train.py` | Full | Modern AMP API (`torch.amp.autocast/GradScaler`) |
+
+### Numba Kernels (CPU Acceleration Only)
+
+The `math_utils/numba_kernels.py` module provides **CPU-only** JIT acceleration via `@nb.jit(nopython=True)`. These are automatically **bypassed on CUDA** devices:
+
+```python
+# In attention.py - automatically uses PyTorch on GPU:
+is_cuda = device.type == 'cuda'
+if use_numba and NUMBA_AVAILABLE and not is_cuda:
+    _compute_kl_matrix_numba(...)  # CPU path
+else:
+    _compute_kl_matrix_torch(...)  # GPU path (fully vectorized)
+```
+
+The PyTorch path (`_compute_kl_matrix_torch`) is fully vectorized and runs efficiently on GPU.
+
+### Mixed Precision Training
+
+Uses modern PyTorch 2.x AMP API compatible with CUDA 12+:
+
+```python
+# GradScaler with device argument
+self.scaler = torch.amp.GradScaler('cuda')
+
+# Autocast with device argument
+with torch.amp.autocast('cuda', enabled=...):
+    ...
+```
+
+### RTX 5090 Considerations
+
+- **Compute capability**: Blackwell architecture (sm_100+) - ensure PyTorch is compiled with support
+- **Memory**: 32GB VRAM enables batch_size=32+ with seq_len=128
+- **FP8**: PyTorch 2.x supports FP8 on Blackwell (experimental) - not yet implemented here
+
+### Quick Start (GPU Training)
+
+```python
+from transformer.model import GaugeTransformerLM
+from transformer.train import Trainer, TrainingConfig
+
+model = GaugeTransformerLM(...)
+config = TrainingConfig(
+    device='cuda',
+    use_amp=True,  # Enable mixed precision
+    batch_size=32,
+)
+trainer = Trainer(model, train_loader, config=config)
+trainer.train()
+```
+
 ## Communication Style
 
 **Be direct:**

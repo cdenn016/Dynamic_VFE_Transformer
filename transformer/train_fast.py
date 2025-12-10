@@ -145,8 +145,8 @@ class FastTrainer:
         self.best_val_loss = float('inf')
         self.patience_counter = 0  # Early stopping counter
 
-        # Mixed precision
-        self.scaler = torch.cuda.amp.GradScaler() if config.use_amp else None
+        # Mixed precision (using modern AMP API for PyTorch 2.x / CUDA 12+)
+        self.scaler = torch.amp.GradScaler('cuda') if config.use_amp else None
 
         # W&B logging
         if config.use_wandb and WANDB_AVAILABLE:
@@ -320,9 +320,9 @@ class FastTrainer:
         input_ids = input_ids.to(self.device)
         target_ids = target_ids.to(self.device)
 
-        # Forward pass (with optional AMP)
+        # Forward pass (with optional AMP using modern API for PyTorch 2.x / CUDA 12+)
         if self.config.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 loss, metrics = compute_free_energy_loss(
                     self.model,
                     input_ids,
