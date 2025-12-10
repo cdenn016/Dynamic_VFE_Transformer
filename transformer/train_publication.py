@@ -222,8 +222,16 @@ GPU_OPTIMIZED_CONFIG = {
     'ffn_window': 256,
 
     # Hamiltonian FFN parameters
-    'ffn_hamiltonian_dt': 0.01,
-    'ffn_hamiltonian_n_steps': 10,
+    # =========================================================================
+    # SPEED vs PHYSICS FIDELITY TRADEOFF:
+    #   n_steps=2  → Fast (~0.1-0.3s/step), good for development
+    #   n_steps=10 → Moderate (~1-2s/step), reasonable physics
+    #   n_steps=25 → Slow (~3-5s/step), high physics fidelity
+    # The leapfrog loop is sequential - GPU can't parallelize it!
+    # For full GPU utilization: use ffn_mode='learned' instead
+    # =========================================================================
+    'ffn_hamiltonian_dt': 0.05,           # Larger dt works with fewer steps
+    'ffn_hamiltonian_n_steps': 2,         # TOGGLE THIS for speed vs physics!
     'ffn_hamiltonian_momentum_scale': 0.5,
     'ffn_hamiltonian_gamma': 0.0,
     'ffn_hamiltonian_mass_use_prior': True,
