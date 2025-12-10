@@ -274,9 +274,9 @@ GPU_OPTIMIZED_CONFIG = {
     'grad_clip': 1.0,
 
     # Logging (less frequent for speed)
-    'log_interval': 5,
-    'eval_interval': 25,
-    'checkpoint_interval': 100,
+    'log_interval': 10,
+    'eval_interval': 50,
+    'checkpoint_interval': 200,
     'patience': 5,
 
     # Irrep structure (for K=255)
@@ -548,8 +548,9 @@ class PublicationTrainer(FastTrainer):
             )
             loss.backward()
 
-        # Compute gradient norms BEFORE clipping
-        grad_norms = self._compute_gradient_norms()
+        # Compute gradient norms BEFORE clipping (only at log intervals for speed)
+        # This is computed conditionally in train() loop now
+        grad_norms = None
 
         # Clip and step (with scaler if AMP enabled)
         if self.scaler is not None:
@@ -646,41 +647,45 @@ class PublicationTrainer(FastTrainer):
                 batch = next(train_iterator)
 
             # Train step with full metrics
-            metrics, grad_norms = self.train_step(batch)
+            metrics, _ = self.train_step(batch)
 
             step_time = time.time() - step_start
+
+            # Only compute gradient norms at log intervals (expensive for large models)
+            is_log_step = (step + 1) % self.config.log_interval == 0
+            grad_norms = self._compute_gradient_norms() if is_log_step else None
 
             # Get learning rates
             lrs = {group['name']: group['lr'] for group in self.optimizer.param_groups}
 
-            # Log to basic tracker
-            batch_size = batch[0].shape[0]
-            seq_len = batch[0].shape[1]
-            self.metrics_tracker.log_step(
-                step + 1, metrics, lrs, grad_norms, step_time, batch_size, seq_len
-            )
-
-            # Log to comprehensive publication metrics (if enabled)
-            if self.pub_metrics:
-                # Extract Hamiltonian diagnostics if available
-                diagnostics = metrics.get('hamiltonian_diagnostics', None)
-                self.pub_metrics.record_training_step(
-                    step=step + 1,
-                    epoch=(step + 1) / len(self.train_loader),
-                    train_metrics={
-                        'loss': metrics['train_loss_total'],
-                        'ce_loss': metrics['train_loss_ce'],
-                    },
-                    diagnostics=diagnostics,
-                    grad_norms=grad_norms,
-                    lrs=lrs,
-                    step_time=step_time,
-                    batch_size=batch_size,
-                    seq_len=seq_len,
+            # Log to basic tracker (only at log intervals)
+            if is_log_step:
+                batch_size = batch[0].shape[0]
+                seq_len = batch[0].shape[1]
+                self.metrics_tracker.log_step(
+                    step + 1, metrics, lrs, grad_norms, step_time, batch_size, seq_len
                 )
 
+                # Log to comprehensive publication metrics (if enabled)
+                if self.pub_metrics:
+                    diagnostics = metrics.get('hamiltonian_diagnostics', None)
+                    self.pub_metrics.record_training_step(
+                        step=step + 1,
+                        epoch=(step + 1) / len(self.train_loader),
+                        train_metrics={
+                            'loss': metrics['train_loss_total'],
+                            'ce_loss': metrics['train_loss_ce'],
+                        },
+                        diagnostics=diagnostics,
+                        grad_norms=grad_norms,
+                        lrs=lrs,
+                        step_time=step_time,
+                        batch_size=batch_size,
+                        seq_len=seq_len,
+                    )
+
             # Console logging
-            if (step + 1) % self.config.log_interval == 0:
+            if is_log_step:
                 log_msg = (
                     f"Step {step+1}/{self.config.max_steps} | "
                     f"Loss: {metrics['train_loss_total']:.4f} | "
