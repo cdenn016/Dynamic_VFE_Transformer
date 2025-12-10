@@ -550,7 +550,15 @@ class GaugeTransformerLM(nn.Module):
         n_params = sum(p.numel() for p in self.parameters())
 
         if non_embedding:
-            n_params -= self.token_embed.mu_embed.weight.numel()
+            # Exclude embedding parameters
+            if hasattr(self.token_embed, 'mu_embed'):
+                # Standard per-token embeddings
+                n_params -= self.token_embed.mu_embed.weight.numel()
+            elif hasattr(self.token_embed, 'base_mu'):
+                # Gauge-fixed priors: base_mu + base_log_sigma_diag + phi_embed
+                n_params -= self.token_embed.base_mu.numel()
+                n_params -= self.token_embed.base_log_sigma_diag.numel()
+                n_params -= self.token_embed.phi_embed.weight.numel()
 
         return n_params
 
