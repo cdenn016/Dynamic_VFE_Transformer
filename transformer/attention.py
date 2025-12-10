@@ -654,7 +654,7 @@ def compute_attention_weights_local(
 
     Returns:
         beta: Sparse attention weights as dense (B, N, N) with zeros outside window
-        kl_matrix: Sparse KL divergences as dense (B, N, N) with inf outside window
+        kl_matrix: Sparse KL divergences as dense (B, N, N) with zeros outside window
 
     Complexity:
         - Full attention: O(B × N² × K³)
@@ -785,6 +785,15 @@ def compute_attention_weights_local(
     beta = beta + epsilon
     beta = beta / beta.sum(dim=-1, keepdim=True)
 
+    # CRITICAL: Replace inf with 0 in KL matrix for loss computation
+    # This prevents 0 * inf = NaN when computing beta * kl in the loss
+    # (beta is 0 where kl was inf, but floating point 0*inf = nan)
+    kl_matrix = torch.where(
+        torch.isinf(kl_matrix),
+        torch.zeros_like(kl_matrix),
+        kl_matrix
+    )
+
     return beta, kl_matrix
 
 
@@ -815,7 +824,7 @@ def compute_attention_weights_sparse(
 
     Returns:
         beta: Attention weights (B, N, N) - zeros where mask=0
-        kl_matrix: KL divergences (B, N, N) - inf where mask=0
+        kl_matrix: KL divergences (B, N, N) - zeros where mask=0
     """
     B, N, K = mu_q.shape
     device = mu_q.device
@@ -945,6 +954,14 @@ def compute_attention_weights_sparse(
     beta = F.softmax(logits, dim=-1)
     beta = beta + epsilon
     beta = beta / beta.sum(dim=-1, keepdim=True)
+
+    # CRITICAL: Replace inf with 0 in KL matrix for loss computation
+    # This prevents 0 * inf = NaN when computing beta * kl in the loss
+    kl_matrix = torch.where(
+        torch.isinf(kl_matrix),
+        torch.zeros_like(kl_matrix),
+        kl_matrix
+    )
 
     return beta, kl_matrix
 
