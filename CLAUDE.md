@@ -114,6 +114,27 @@ trainer = Trainer(model, train_loader, config=config)
 trainer.train()
 ```
 
+### Known Dependency Issues (Anaconda/Windows)
+
+**PyArrow DLL Error**: The `transformers` package has a broken dependency chain on Anaconda/Windows:
+```
+transformers → sklearn → pyarrow → DLL load failed
+```
+
+**Solution**: Use `tiktoken` instead of `transformers` for BPE tokenization:
+```bash
+# In Anaconda environment (not system Python!)
+pip install tiktoken
+```
+
+The `data.py` module automatically prefers tiktoken when available. It's OpenAI's fast BPE tokenizer with no heavy dependencies.
+
+**Multiple Python Environments**: Spyder (Anaconda) may use a different Python than `pip`. Always install with:
+```python
+import sys
+!{sys.executable} -m pip install tiktoken
+```
+
 ## Communication Style
 
 **Be direct:**

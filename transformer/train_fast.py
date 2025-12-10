@@ -385,11 +385,11 @@ class FastTrainer:
 
         return formatted_metrics
 
-    def validate(self, max_batches: int = 10) -> Dict[str, float]:
+    def validate(self, max_batches: int = 5) -> Dict[str, float]:
         """Validation loop.
 
         Args:
-            max_batches: Maximum number of validation batches (default: 10 for speed)
+            max_batches: Maximum number of validation batches (default: 5 for speed)
         """
         self.model.eval()
 
