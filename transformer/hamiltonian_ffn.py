@@ -1622,9 +1622,11 @@ class HamiltonianFFN(nn.Module):
         # The main memory savings come from attention (O(N²×K²) -> O(N²×K)),
         # but FFN operates per-token so full matrices are fine here.
         if self.diagonal_covariance:
-            # Convert diagonal variances to full diagonal matrices
-            Sigma_dyn = torch.diag_embed(Sigma_dyn)  # (B, N, K) -> (B, N, K, K)
-            Sigma_prior_dyn = torch.diag_embed(Sigma_prior_dyn)  # (B, N, K) -> (B, N, K, K)
+            # Convert diagonal variances to full diagonal matrices (only if actually diagonal)
+            if Sigma_dyn.dim() == 3:  # (B, N, K) diagonal
+                Sigma_dyn = torch.diag_embed(Sigma_dyn)  # -> (B, N, K, K)
+            if Sigma_prior_dyn.dim() == 3:  # (B, N, K) diagonal
+                Sigma_prior_dyn = torch.diag_embed(Sigma_prior_dyn)  # -> (B, N, K, K)
 
         # Use enable_grad() to ensure autograd.grad() works even when called
         # from validation (which uses torch.no_grad() context)
