@@ -455,15 +455,31 @@ class InertiaOfBeliefMass(nn.Module):
         # Symmetrize and regularize
         M = 0.5 * (M + M.transpose(-1, -2))
 
+        # Replace NaN/Inf with identity before eigendecomposition
+        if torch.isnan(M).any() or torch.isinf(M).any():
+            M = torch.where(
+                torch.isnan(M) | torch.isinf(M),
+                torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1),
+                M
+            )
+
+        # Add strong diagonal regularization BEFORE eigendecomposition
+        # This ensures the matrix is well-conditioned
+        reg_strength = max(self.config.min_eigenvalue, 1e-4)
+        M = M + reg_strength * torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0)
+
         # Ensure minimum eigenvalue for stability
         # IMPORTANT: Force FP32 for eigendecomposition (fails under FP16/AMP)
         M_fp32 = M.float()
-        eigenvalues, eigenvectors = torch.linalg.eigh(M_fp32)
-        eigenvalues = torch.clamp(eigenvalues, min=self.config.min_eigenvalue)
-        M = (eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
-
-        # Compute inverse
-        M_inv = (eigenvectors @ torch.diag_embed(1.0 / eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
+        try:
+            eigenvalues, eigenvectors = torch.linalg.eigh(M_fp32)
+            eigenvalues = torch.clamp(eigenvalues, min=self.config.min_eigenvalue)
+            M = (eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
+            M_inv = (eigenvectors @ torch.diag_embed(1.0 / eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
+        except RuntimeError:
+            # Fallback to regularized identity if eigendecomposition fails
+            M = torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1).clone()
+            M_inv = M.clone()
 
         return M, M_inv
 
@@ -483,15 +499,24 @@ def ensure_spd(Sigma: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
 
     Σ_spd = V max(Λ, ε) Vᵀ
     """
-    # Eigendecomposition (force FP32 for numerical stability under AMP)
     orig_dtype = Sigma.dtype
-    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma.float())
+    K = Sigma.shape[-1]
+    device = Sigma.device
 
-    # Clip eigenvalues to be positive
-    eigenvalues_clipped = torch.clamp(eigenvalues, min=eps)
+    # Add diagonal regularization before eigendecomposition
+    Sigma_reg = Sigma + eps * torch.eye(K, device=device, dtype=Sigma.dtype).unsqueeze(0).unsqueeze(0)
+    Sigma_reg = 0.5 * (Sigma_reg + Sigma_reg.transpose(-1, -2))  # Ensure symmetric
 
-    # Reconstruct and cast back to original dtype
-    Sigma_spd = (eigenvectors @ torch.diag_embed(eigenvalues_clipped) @ eigenvectors.transpose(-1, -2)).to(orig_dtype)
+    # Eigendecomposition (force FP32 for numerical stability under AMP)
+    try:
+        eigenvalues, eigenvectors = torch.linalg.eigh(Sigma_reg.float())
+        # Clip eigenvalues to be positive
+        eigenvalues_clipped = torch.clamp(eigenvalues, min=eps)
+        # Reconstruct and cast back to original dtype
+        Sigma_spd = (eigenvectors @ torch.diag_embed(eigenvalues_clipped) @ eigenvectors.transpose(-1, -2)).to(orig_dtype)
+    except RuntimeError:
+        # Fallback to regularized identity
+        Sigma_spd = eps * torch.eye(K, device=device, dtype=orig_dtype).unsqueeze(0).unsqueeze(0).expand_as(Sigma).clone()
 
     return symmetrize(Sigma_spd)
 
@@ -647,30 +672,39 @@ def spd_exponential_map(Sigma: torch.Tensor, V: torch.Tensor, eps: float = 1e-8)
 
     Maps tangent vector V at Σ to a point on the SPD manifold.
     """
-    # Regularize Sigma
     orig_dtype = Sigma.dtype
+    K = Sigma.shape[-1]
+    device = Sigma.device
+
+    # Regularize Sigma
     Sigma = symmetrize(Sigma)
-    Sigma = Sigma + eps * torch.eye(Sigma.shape[-1], device=Sigma.device, dtype=Sigma.dtype)
+    Sigma = Sigma + eps * torch.eye(K, device=device, dtype=Sigma.dtype)
 
-    # Matrix square root via eigendecomposition (force FP32 for stability under AMP)
-    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma.float())
-    eigenvalues = torch.clamp(eigenvalues, min=eps)
+    try:
+        # Matrix square root via eigendecomposition (force FP32 for stability under AMP)
+        eigenvalues, eigenvectors = torch.linalg.eigh(Sigma.float())
+        eigenvalues = torch.clamp(eigenvalues, min=eps)
 
-    Sigma_sqrt = eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
-    Sigma_inv_sqrt = eigenvectors @ torch.diag_embed(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
+        Sigma_sqrt = eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
+        Sigma_inv_sqrt = eigenvectors @ torch.diag_embed(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
 
-    # W = Σ^{-1/2} V Σ^{-1/2}
-    W = Sigma_inv_sqrt @ V.float() @ Sigma_inv_sqrt
-    W = symmetrize(W)  # Ensure symmetric for matrix exp
+        # W = Σ^{-1/2} V Σ^{-1/2}
+        W = Sigma_inv_sqrt @ V.float() @ Sigma_inv_sqrt
+        W = symmetrize(W)  # Ensure symmetric for matrix exp
 
-    # exp(W) via eigendecomposition (more stable than torch.matrix_exp for symmetric)
-    W_eigenvalues, W_eigenvectors = torch.linalg.eigh(W)
-    exp_W = W_eigenvectors @ torch.diag_embed(torch.exp(W_eigenvalues)) @ W_eigenvectors.transpose(-1, -2)
+        # exp(W) via eigendecomposition (more stable than torch.matrix_exp for symmetric)
+        W_eigenvalues, W_eigenvectors = torch.linalg.eigh(W)
+        # Clamp W eigenvalues to prevent overflow in exp
+        W_eigenvalues = torch.clamp(W_eigenvalues, min=-20.0, max=20.0)
+        exp_W = W_eigenvectors @ torch.diag_embed(torch.exp(W_eigenvalues)) @ W_eigenvectors.transpose(-1, -2)
 
-    # exp_Σ(V) = Σ^{1/2} exp(W) Σ^{1/2}
-    Sigma_new = Sigma_sqrt @ exp_W @ Sigma_sqrt
+        # exp_Σ(V) = Σ^{1/2} exp(W) Σ^{1/2}
+        Sigma_new = Sigma_sqrt @ exp_W @ Sigma_sqrt
+        return ensure_spd(Sigma_new.to(orig_dtype), eps)
 
-    return ensure_spd(Sigma_new.to(orig_dtype), eps)
+    except RuntimeError:
+        # Fallback: return input with small perturbation (identity-like behavior)
+        return ensure_spd(Sigma.to(orig_dtype), eps)
 
 
 # =============================================================================
@@ -1487,9 +1521,17 @@ class HamiltonianFFN(nn.Module):
         # Sample π_μ from N(0, M)
         # π_μ = M^{1/2} · z where z ~ N(0, I)
         # Compute M^{1/2} via eigendecomposition (force FP32 for stability under AMP)
-        eigenvalues, eigenvectors = torch.linalg.eigh(M.float())
-        eigenvalues = torch.clamp(eigenvalues, min=self.eps)
-        M_sqrt = (eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)).to(dtype)
+        # Add regularization to M before eigendecomposition
+        M_reg = M + self.eps * torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0)
+        M_reg = 0.5 * (M_reg + M_reg.transpose(-1, -2))  # Ensure symmetric
+
+        try:
+            eigenvalues, eigenvectors = torch.linalg.eigh(M_reg.float())
+            eigenvalues = torch.clamp(eigenvalues, min=self.eps)
+            M_sqrt = (eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)).to(dtype)
+        except RuntimeError:
+            # Fallback to identity
+            M_sqrt = torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1)
 
         noise_mu = torch.randn(B, N, K, device=device, dtype=dtype)
         pi_mu = self.momentum_scale * torch.einsum('...ij,...j->...i', M_sqrt, noise_mu)
