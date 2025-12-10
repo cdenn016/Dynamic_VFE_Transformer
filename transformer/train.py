@@ -43,22 +43,29 @@ from transformer.attention import compute_attention_weights
 # =============================================================================
 
 def gaussian_kl_divergence(
-    mu_q: torch.Tensor,      # (B, N, K) or (B, N, K)
-    sigma_q: torch.Tensor,   # (B, N, K, K) or None (uses identity)
+    mu_q: torch.Tensor,      # (B, N, K)
+    sigma_q: torch.Tensor,   # (B, N, K, K) full, (B, N, K) diagonal, or None (uses identity)
     mu_p: torch.Tensor,      # (B, N, K)
-    sigma_p: torch.Tensor,   # (B, N, K, K) or None (uses identity)
+    sigma_p: torch.Tensor,   # (B, N, K, K) full, (B, N, K) diagonal, or None (uses identity)
     eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     Compute KL(N(μ_q, Σ_q) || N(μ_p, Σ_p)) for Gaussian distributions.
 
-    KL = 0.5 * [tr(Σ_p⁻¹ Σ_q) + (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q) - K + log(|Σ_p|/|Σ_q|)]
+    Handles both full covariance matrices (B, N, K, K) and diagonal covariances (B, N, K).
+    Diagonal covariances are detected automatically based on tensor dimensions.
+
+    For full covariances:
+        KL = 0.5 * [tr(Σ_p⁻¹ Σ_q) + (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q) - K + log(|Σ_p|/|Σ_q|)]
+
+    For diagonal covariances (O(K) instead of O(K³)):
+        KL = 0.5 * [Σ_k(σ_q[k]/σ_p[k]) + Σ_k((μ_p[k]-μ_q[k])²/σ_p[k]) - K + Σ_k(log(σ_p[k])-log(σ_q[k]))]
 
     Args:
         mu_q: Posterior means (B, N, K)
-        sigma_q: Posterior covariances (B, N, K, K) or None
+        sigma_q: Posterior covariances - (B, N, K, K) full or (B, N, K) diagonal or None
         mu_p: Prior means (B, N, K)
-        sigma_p: Prior covariances (B, N, K, K) or None
+        sigma_p: Prior covariances - (B, N, K, K) full or (B, N, K) diagonal or None
         eps: Numerical stability constant
 
     Returns:
@@ -68,39 +75,88 @@ def gaussian_kl_divergence(
     device = mu_q.device
     dtype = mu_q.dtype
 
-    # Default to identity covariances if not provided
-    if sigma_q is None:
-        sigma_q = torch.eye(K, device=device, dtype=dtype).expand(*mu_q.shape[:-1], K, K)
-    if sigma_p is None:
-        sigma_p = torch.eye(K, device=device, dtype=dtype).expand(*mu_p.shape[:-1], K, K)
+    # Detect if covariances are diagonal (3D) or full (4D)
+    sigma_q_is_diagonal = sigma_q is not None and sigma_q.dim() == 3
+    sigma_p_is_diagonal = sigma_p is not None and sigma_p.dim() == 3
 
-    # Regularize for numerical stability
-    sigma_q_reg = sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
-    sigma_p_reg = sigma_p + eps * torch.eye(K, device=device, dtype=dtype)
+    # If either is diagonal, use diagonal path for both (more efficient)
+    use_diagonal = sigma_q_is_diagonal or sigma_p_is_diagonal
 
-    # Compute Σ_p⁻¹ via Cholesky
-    L_p = torch.linalg.cholesky(sigma_p_reg)
+    if use_diagonal:
+        # =================================================================
+        # DIAGONAL PATH: O(K) per agent instead of O(K³)
+        # =================================================================
+        # Convert to diagonal variances if needed
+        if sigma_q is None:
+            sigma_q_diag = torch.ones(*mu_q.shape, device=device, dtype=dtype)
+        elif sigma_q.dim() == 3:
+            sigma_q_diag = sigma_q  # Already diagonal (B, N, K)
+        else:
+            # Extract diagonal from full matrix
+            sigma_q_diag = torch.diagonal(sigma_q, dim1=-2, dim2=-1)  # (B, N, K)
 
-    # Trace term: tr(Σ_p⁻¹ Σ_q)
-    # Solve L_p @ Y = Σ_q for Y, then tr(Σ_p⁻¹ Σ_q) = tr(L_p⁻ᵀ Y)
-    Y = torch.linalg.solve_triangular(L_p, sigma_q_reg, upper=False)
-    Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
-    trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)  # (B, N)
+        if sigma_p is None:
+            sigma_p_diag = torch.ones(*mu_p.shape, device=device, dtype=dtype)
+        elif sigma_p.dim() == 3:
+            sigma_p_diag = sigma_p  # Already diagonal (B, N, K)
+        else:
+            # Extract diagonal from full matrix
+            sigma_p_diag = torch.diagonal(sigma_p, dim1=-2, dim2=-1)  # (B, N, K)
 
-    # Mahalanobis term: (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q)
-    delta_mu = mu_p - mu_q  # (B, N, K)
-    # Solve L_p @ v = delta_mu
-    v = torch.linalg.solve_triangular(L_p, delta_mu.unsqueeze(-1), upper=False).squeeze(-1)
-    mahal_term = torch.sum(v ** 2, dim=-1)  # (B, N)
+        # Ensure positivity
+        sigma_q_diag = sigma_q_diag.clamp(min=eps)
+        sigma_p_diag = sigma_p_diag.clamp(min=eps)
 
-    # Log determinant terms
-    logdet_p = 2.0 * torch.sum(torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1)
-    L_q = torch.linalg.cholesky(sigma_q_reg)
-    logdet_q = 2.0 * torch.sum(torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1)
-    logdet_term = logdet_p - logdet_q  # (B, N)
+        # Trace term: Σ_k (σ_q[k] / σ_p[k])
+        trace_term = (sigma_q_diag / sigma_p_diag).sum(dim=-1)  # (B, N)
 
-    # KL divergence
-    kl = 0.5 * (trace_term + mahal_term - K + logdet_term)
+        # Mahalanobis term: Σ_k ((μ_p[k] - μ_q[k])² / σ_p[k])
+        delta_mu = mu_p - mu_q  # (B, N, K)
+        mahal_term = ((delta_mu ** 2) / sigma_p_diag).sum(dim=-1)  # (B, N)
+
+        # Log determinant term: Σ_k (log(σ_p[k]) - log(σ_q[k]))
+        logdet_term = (torch.log(sigma_p_diag) - torch.log(sigma_q_diag)).sum(dim=-1)  # (B, N)
+
+        # KL divergence
+        kl = 0.5 * (trace_term + mahal_term - K + logdet_term)
+
+    else:
+        # =================================================================
+        # FULL COVARIANCE PATH: O(K³) via Cholesky
+        # =================================================================
+        # Default to identity covariances if not provided
+        if sigma_q is None:
+            sigma_q = torch.eye(K, device=device, dtype=dtype).expand(*mu_q.shape[:-1], K, K)
+        if sigma_p is None:
+            sigma_p = torch.eye(K, device=device, dtype=dtype).expand(*mu_p.shape[:-1], K, K)
+
+        # Regularize for numerical stability
+        sigma_q_reg = sigma_q + eps * torch.eye(K, device=device, dtype=dtype)
+        sigma_p_reg = sigma_p + eps * torch.eye(K, device=device, dtype=dtype)
+
+        # Compute Σ_p⁻¹ via Cholesky
+        L_p = torch.linalg.cholesky(sigma_p_reg)
+
+        # Trace term: tr(Σ_p⁻¹ Σ_q)
+        # Solve L_p @ Y = Σ_q for Y, then tr(Σ_p⁻¹ Σ_q) = tr(L_p⁻ᵀ Y)
+        Y = torch.linalg.solve_triangular(L_p, sigma_q_reg, upper=False)
+        Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+        trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)  # (B, N)
+
+        # Mahalanobis term: (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q)
+        delta_mu = mu_p - mu_q  # (B, N, K)
+        # Solve L_p @ v = delta_mu
+        v = torch.linalg.solve_triangular(L_p, delta_mu.unsqueeze(-1), upper=False).squeeze(-1)
+        mahal_term = torch.sum(v ** 2, dim=-1)  # (B, N)
+
+        # Log determinant terms
+        logdet_p = 2.0 * torch.sum(torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1)
+        L_q = torch.linalg.cholesky(sigma_q_reg)
+        logdet_q = 2.0 * torch.sum(torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1)
+        logdet_term = logdet_p - logdet_q  # (B, N)
+
+        # KL divergence
+        kl = 0.5 * (trace_term + mahal_term - K + logdet_term)
 
     # Clamp to non-negative (numerical safety)
     return torch.clamp(kl, min=0.0)
@@ -278,6 +334,8 @@ def compute_free_energy_loss(
 
         # Compute γ_{ij} coupling weights and KL(p_i || Ω_{ij} p_j)
         # Using same attention mechanism as β_{ij}, but on priors
+        # Detect if sigma_p is diagonal (3D) or full (4D)
+        diagonal_cov = sigma_p is not None and sigma_p.dim() == 3
         gamma, kl_prior = compute_attention_weights(
             mu_p,
             sigma_p,
@@ -288,6 +346,7 @@ def compute_free_energy_loss(
             mask=mask,
             use_numba=False,  # Use PyTorch for gradient tracking
             return_kl=True,
+            diagonal_covariance=diagonal_cov,
         )
         # gamma: (B, N, N)
         # kl_prior: (B, N, N)
