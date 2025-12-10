@@ -48,7 +48,15 @@ except Exception as e:
     load_dataset = None
     print(f"[DEBUG] datasets import error: {type(e).__name__}: {e}")
 
-# Transformers (optional - only needed for BPE tokenization)
+# Tiktoken (OpenAI's fast BPE tokenizer - preferred, no heavy dependencies)
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    tiktoken = None
+
+# Transformers (fallback for BPE tokenization - has heavy sklearn/pyarrow deps)
 try:
     from transformers import AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
@@ -63,6 +71,7 @@ except Exception as e:
 
 # Legacy compatibility
 HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
+BPE_AVAILABLE = TIKTOKEN_AVAILABLE or TRANSFORMERS_AVAILABLE
 
 
 # =============================================================================
@@ -355,6 +364,127 @@ class WikiText2Dataset(Dataset):
         target_ids = self.tokens[start_idx + 1:end_idx + 1]
 
         # Pad if necessary (should only happen at end of dataset)
+        if len(input_ids) < self.max_seq_len:
+            padding_length = self.max_seq_len - len(input_ids)
+            input_ids = torch.cat([
+                input_ids,
+                torch.full((padding_length,), self.pad_token_id, dtype=torch.long)
+            ])
+            target_ids = torch.cat([
+                target_ids,
+                torch.full((padding_length,), self.pad_token_id, dtype=torch.long)
+            ])
+
+        return input_ids, target_ids
+
+
+class WikiText2TiktokenDataset(Dataset):
+    """
+    WikiText-2 dataset using tiktoken (OpenAI's fast BPE tokenizer).
+
+    Lighter weight than transformers - no sklearn/pyarrow dependencies.
+    Uses GPT-2's tokenizer by default (50257 vocab).
+    """
+
+    def __init__(
+        self,
+        split: str = 'train',
+        max_seq_len: int = 128,
+        vocab_size: Optional[int] = None,
+        cache_dir: Optional[str] = None,
+    ):
+        """
+        Initialize WikiText-2 dataset with tiktoken.
+
+        Args:
+            split: 'train', 'validation', or 'test'
+            max_seq_len: Maximum sequence length (T)
+            vocab_size: If provided, restrict to top K tokens
+            cache_dir: Optional cache directory for dataset
+        """
+        assert TIKTOKEN_AVAILABLE, "tiktoken required! pip install tiktoken"
+
+        self.split = split
+        self.max_seq_len = max_seq_len
+        self.vocab_size_limit = vocab_size
+
+        # Load GPT-2 tokenizer via tiktoken
+        self.tokenizer = tiktoken.get_encoding("gpt2")
+        self._full_vocab_size = self.tokenizer.n_vocab  # 50257
+
+        # Tiktoken doesn't have explicit pad/eos, use token 0 as pad
+        self.pad_token_id = 0
+        self.eos_token_id = 50256  # GPT-2's <|endoftext|>
+
+        # Load dataset
+        print(f"Loading WikiText-2 ({split}) for BPE tokenization (tiktoken)...")
+
+        if DATASETS_AVAILABLE:
+            dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split=split, cache_dir=cache_dir)
+            texts = [item['text'] for item in dataset if len(item['text'].strip()) > 0]
+            full_text = '\n\n'.join(texts)
+        else:
+            print("  (Using direct download fallback)")
+            wikitext_data = _download_wikitext2_fallback(cache_dir)
+            full_text = wikitext_data[split]
+
+        print(f"  Total characters: {len(full_text):,}")
+
+        # Tokenize
+        print(f"Tokenizing with tiktoken (GPT-2 BPE)...")
+        tokens = self.tokenizer.encode(full_text)
+
+        # Restrict vocabulary if requested
+        if vocab_size is not None and vocab_size < self._full_vocab_size:
+            print(f"  Restricting vocabulary to {vocab_size} most frequent tokens...")
+            tokens = self._restrict_vocab(tokens, vocab_size)
+
+        self.tokens = torch.tensor(tokens, dtype=torch.long)
+
+        print(f"  Tokenized: {len(self.tokens):,} tokens")
+        print(f"  Vocabulary size: {self.get_vocab_size()}")
+
+        self.num_sequences = max(1, len(self.tokens) - self.max_seq_len)
+        print(f"  Number of sequences: {self.num_sequences:,}")
+
+    def _restrict_vocab(self, tokens: List[int], target_vocab_size: int) -> List[int]:
+        """Restrict tokens to top K most frequent."""
+        # Count frequencies
+        token_counts = {}
+        for tok in tokens:
+            token_counts[tok] = token_counts.get(tok, 0) + 1
+
+        sorted_tokens = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
+
+        # Use last slot for UNK
+        unk_id = target_vocab_size - 1
+        top_k_minus_1 = set([tok for tok, _ in sorted_tokens[:target_vocab_size - 1]])
+
+        # Build mapping
+        non_unk_tokens = sorted(top_k_minus_1)
+        token_to_id = {tok: i for i, tok in enumerate(non_unk_tokens)}
+        token_to_id['UNK'] = unk_id
+
+        self._vocab_mapping = token_to_id
+        self._restricted_vocab_size = target_vocab_size
+
+        return [token_to_id.get(tok, unk_id) for tok in tokens]
+
+    def get_vocab_size(self) -> int:
+        if hasattr(self, '_restricted_vocab_size'):
+            return self._restricted_vocab_size
+        return self._full_vocab_size
+
+    def __len__(self) -> int:
+        return self.num_sequences
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        start_idx = idx
+        end_idx = start_idx + self.max_seq_len
+
+        input_ids = self.tokens[start_idx:end_idx]
+        target_ids = self.tokens[start_idx + 1:end_idx + 1]
+
         if len(input_ids) < self.max_seq_len:
             padding_length = self.max_seq_len - len(input_ids)
             input_ids = torch.cat([
@@ -800,13 +930,16 @@ def create_dataloaders(
     """
     Create train and validation dataloaders for WikiText-2.
 
+    Uses tiktoken (OpenAI's fast tokenizer) if available, falls back to
+    transformers if not. Tiktoken is preferred as it has no heavy dependencies.
+
     Args:
         max_seq_len: Maximum sequence length
         batch_size: Batch size
         vocab_size: If provided, restrict vocabulary to top K tokens
         num_workers: Number of data loading workers
         cache_dir: Optional cache directory
-        tokenizer_name: HuggingFace tokenizer name
+        tokenizer_name: HuggingFace tokenizer name (only used if tiktoken unavailable)
 
     Returns:
         train_loader: Training dataloader
@@ -824,32 +957,54 @@ def create_dataloaders(
         ...     logits = model(input_ids)
         ...     loss = criterion(logits, target_ids)
     """
-    # Only transformers required - datasets has fallback download
-    if not TRANSFORMERS_AVAILABLE:
-        raise ImportError("transformers required for BPE tokenization! pip install transformers")
+    # Prefer tiktoken (lightweight), fall back to transformers
+    if not BPE_AVAILABLE:
+        raise ImportError(
+            "BPE tokenization requires tiktoken or transformers!\n"
+            "  pip install tiktoken  (recommended - lightweight)\n"
+            "  pip install transformers  (alternative - heavier)"
+        )
 
     print("="*70)
-    print("CREATING WIKITEXT-2 DATALOADERS (BPE)")
+    if TIKTOKEN_AVAILABLE:
+        print("CREATING WIKITEXT-2 DATALOADERS (BPE via tiktoken)")
+    else:
+        print("CREATING WIKITEXT-2 DATALOADERS (BPE via transformers)")
     print("="*70)
     if not DATASETS_AVAILABLE:
         print("(Using direct download fallback - datasets package not available)")
 
-    # Create datasets
-    train_dataset = WikiText2Dataset(
-        split='train',
-        max_seq_len=max_seq_len,
-        vocab_size=vocab_size,
-        tokenizer_name=tokenizer_name,
-        cache_dir=cache_dir,
-    )
+    # Create datasets - prefer tiktoken
+    if TIKTOKEN_AVAILABLE:
+        train_dataset = WikiText2TiktokenDataset(
+            split='train',
+            max_seq_len=max_seq_len,
+            vocab_size=vocab_size,
+            cache_dir=cache_dir,
+        )
 
-    val_dataset = WikiText2Dataset(
-        split='validation',
-        max_seq_len=max_seq_len,
-        vocab_size=vocab_size,
-        tokenizer_name=tokenizer_name,
-        cache_dir=cache_dir,
-    )
+        val_dataset = WikiText2TiktokenDataset(
+            split='validation',
+            max_seq_len=max_seq_len,
+            vocab_size=vocab_size,
+            cache_dir=cache_dir,
+        )
+    else:
+        train_dataset = WikiText2Dataset(
+            split='train',
+            max_seq_len=max_seq_len,
+            vocab_size=vocab_size,
+            tokenizer_name=tokenizer_name,
+            cache_dir=cache_dir,
+        )
+
+        val_dataset = WikiText2Dataset(
+            split='validation',
+            max_seq_len=max_seq_len,
+            vocab_size=vocab_size,
+            tokenizer_name=tokenizer_name,
+            cache_dir=cache_dir,
+        )
 
     # Get actual vocabulary size (may differ from requested if restricted)
     actual_vocab_size = train_dataset.get_vocab_size()
