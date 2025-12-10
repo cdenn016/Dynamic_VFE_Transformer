@@ -117,6 +117,47 @@ def create_attention_mask(
 
 
 # =============================================================================
+# Transport Operator Caching (for evolve_phi=False optimization)
+# =============================================================================
+
+def compute_transport_operators(
+    phi: torch.Tensor,         # (B, N, 3) gauge frames
+    generators: torch.Tensor,  # (3, K, K) SO(3) generators
+) -> dict:
+    """
+    Precompute transport operators for caching when phi is fixed.
+
+    When evolve_phi=False, these operators are constant across layers.
+    Computing once saves 2 matrix exponentials per head per layer.
+
+    Args:
+        phi: Gauge frames (B, N, 3) in so(3)
+        generators: SO(3) generators (3, K, K)
+
+    Returns:
+        dict with:
+            'exp_phi': (B, N, K, K) - exp(φ·G) for each token
+            'exp_neg_phi': (B, N, K, K) - exp(-φ·G) for each token
+            'Omega': (B, N, N, K, K) - full pairwise transport Ω_ij = exp(φ_i)exp(-φ_j)
+    """
+    # φ·G: combine gauge frames with generators
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
+
+    # Matrix exponentials (the expensive operations!)
+    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+
+    # Full pairwise transport: Ω_ij = exp(φ_i) @ exp(-φ_j)
+    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)  # (B, N, N, K, K)
+
+    return {
+        'exp_phi': exp_phi,
+        'exp_neg_phi': exp_neg_phi,
+        'Omega': Omega,
+    }
+
+
+# =============================================================================
 # Core Attention: KL-Based Weights
 # =============================================================================
 
@@ -131,6 +172,7 @@ def compute_attention_weights(
     use_numba: bool = True,
     return_kl: bool = False,   # Return KL matrix for loss computation
     diagonal_covariance: bool = False,  # Use diagonal sigma (B,N,K) instead of full (B,N,K,K)
+    cached_transport: Optional[dict] = None,  # Precomputed transport operators (from compute_transport_operators)
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Compute attention weights from KL divergences (0D version).
@@ -157,6 +199,8 @@ def compute_attention_weights(
         use_numba: Use fast Numba kernels if available
         diagonal_covariance: If True, sigma_q is (B,N,K) diagonal variances.
                             Uses O(N²×K) memory instead of O(N²×K²)!
+        cached_transport: Optional precomputed transport operators from compute_transport_operators().
+                         When evolve_phi=False, caching avoids redundant matrix exponentials.
 
     Returns:
         beta: Attention weights, shape (B, N, N)
@@ -196,17 +240,18 @@ def compute_attention_weights(
         # DIAGONAL MODE: O(N²×K) memory instead of O(N²×K²)!
         # sigma_q is (B, N, K) not (B, N, K, K)
         _compute_kl_matrix_diagonal(
-            mu_q, sigma_q, phi, generators, kl_matrix
+            mu_q, sigma_q, phi, generators, kl_matrix, cached_transport
         )
     elif use_numba and NUMBA_AVAILABLE and TRANSPORT_AVAILABLE and not is_cuda:
         # Fast path: Use Numba kernels (CPU only)
+        # Note: Numba path doesn't support cached_transport (CPU-only fallback)
         _compute_kl_matrix_numba(
             mu_q, sigma_q, phi, generators, kl_matrix
         )
     else:
         # GPU path OR CPU fallback: Pure PyTorch (fully vectorized, CUDA-compatible)
         _compute_kl_matrix_torch(
-            mu_q, sigma_q, phi, generators, kl_matrix
+            mu_q, sigma_q, phi, generators, kl_matrix, cached_transport
         )
 
     # =========================================================================
@@ -289,6 +334,7 @@ def _compute_kl_matrix_torch(
     phi: torch.Tensor,
     generators: torch.Tensor,
     kl_matrix: torch.Tensor,
+    cached_transport: Optional[dict] = None,  # Precomputed transport operators
 ) -> None:
     """
     VECTORIZED KL matrix computation using pure PyTorch.
@@ -301,6 +347,7 @@ def _compute_kl_matrix_torch(
         phi: (B, N, 3) gauge fields
         generators: (3, K, K) SO(3) generators
         kl_matrix: (B, N, N) output tensor (modified in-place)
+        cached_transport: Optional dict with precomputed 'Omega' from compute_transport_operators()
     """
     B, N, K = mu_q.shape
     device = mu_q.device
@@ -308,16 +355,21 @@ def _compute_kl_matrix_torch(
     eps = 1e-6
 
     # =========================================================================
-    # Step 1: Compute all pairwise transport operators Ω_ij = exp(φ_i) exp(-φ_j)
+    # Step 1: Get transport operators (use cached if available)
     # =========================================================================
-    # phi: (B, N, 3) -> phi_matrix: (B, N, K, K)
-    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
-    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
-    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+    if cached_transport is not None and 'Omega' in cached_transport:
+        # Use precomputed transport operators (saves 2 matrix exponentials!)
+        Omega = cached_transport['Omega']
+    else:
+        # Compute transport operators
+        # phi: (B, N, 3) -> phi_matrix: (B, N, K, K)
+        phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
+        exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+        exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
 
-    # Omega_ij = exp(φ_i) @ exp(-φ_j)
-    # Result: (B, N, N, K, K)
-    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
+        # Omega_ij = exp(φ_i) @ exp(-φ_j)
+        # Result: (B, N, N, K, K)
+        Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
 
     # =========================================================================
     # Step 2: Transport all means and covariances
@@ -480,6 +532,7 @@ def _compute_kl_matrix_diagonal(
     phi: torch.Tensor,         # (B, N, 3) gauge frames
     generators: torch.Tensor,  # (3, K, K) SO(3) generators
     kl_matrix: torch.Tensor,   # (B, N, N) output tensor
+    cached_transport: Optional[dict] = None,  # Precomputed transport operators
 ) -> None:
     """
     DIAGONAL covariance KL computation - O(N²×K) instead of O(N²×K²).
@@ -500,6 +553,7 @@ def _compute_kl_matrix_diagonal(
         phi: (B, N, 3) gauge fields
         generators: (3, K, K) SO(3) generators
         kl_matrix: (B, N, N) output tensor (modified in-place)
+        cached_transport: Optional dict with precomputed 'Omega' from compute_transport_operators()
     """
     B, N, K = mu_q.shape
     device = mu_q.device
@@ -510,14 +564,19 @@ def _compute_kl_matrix_diagonal(
     sigma_q = sigma_q.clamp(min=eps)
 
     # =========================================================================
-    # Step 1: Compute transport operators (still needed for μ rotation)
+    # Step 1: Get transport operators (use cached if available)
     # =========================================================================
-    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
-    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
-    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+    if cached_transport is not None and 'Omega' in cached_transport:
+        # Use precomputed transport operators (saves 2 matrix exponentials!)
+        Omega = cached_transport['Omega']
+    else:
+        # Compute transport operators
+        phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
+        exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+        exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
 
-    # Omega_ij = exp(φ_i) @ exp(-φ_j)
-    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)  # (B, N, N, K, K)
+        # Omega_ij = exp(φ_i) @ exp(-φ_j)
+        Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)  # (B, N, N, K, K)
 
     # =========================================================================
     # Step 2: Transport means (still needed for accurate KL)
@@ -569,6 +628,7 @@ def aggregate_messages(
     generators: torch.Tensor,   # (3, K, K)
     aggregate_mode: str = 'mean_only',  # 'mean_only' or 'full_distribution'
     diagonal_covariance: bool = False,
+    cached_transport: Optional[dict] = None,  # Precomputed transport operators
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Aggregate messages: m_i = Σ_j β_ij Ω_ij[μ_j].
@@ -590,6 +650,7 @@ def aggregate_messages(
         beta: Attention weights (B, N, N) - SCALARS, not fields!
         generators: SO(3) generators (3, K, K)
         aggregate_mode: 'mean_only' or 'full_distribution'
+        cached_transport: Optional dict with precomputed 'Omega' from compute_transport_operators()
 
     Returns:
         mu_agg: Aggregated means (B, N, K)
@@ -607,13 +668,18 @@ def aggregate_messages(
     # VECTORIZED aggregation - no Python loops!
     # =========================================================================
 
-    # Step 1: Compute all pairwise transport operators Ω_ij = exp(φ_i) exp(-φ_j)
-    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
-    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
-    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+    # Step 1: Get transport operators (use cached if available)
+    if cached_transport is not None and 'Omega' in cached_transport:
+        # Use precomputed transport operators (saves 2 matrix exponentials!)
+        Omega = cached_transport['Omega']
+    else:
+        # Compute all pairwise transport operators Ω_ij = exp(φ_i) exp(-φ_j)
+        phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
+        exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+        exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
 
-    # Omega_ij = exp(φ_i) @ exp(-φ_j)  ->  (B, N, N, K, K)
-    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
+        # Omega_ij = exp(φ_i) @ exp(-φ_j)  ->  (B, N, N, K, K)
+        Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)
 
     # Step 2: Transport all means: μ_j^{→i} = Ω_ij @ μ_j
     mu_transported = torch.einsum('bijkl,bjl->bijk', Omega, mu_q)  # (B, N, N, K)
@@ -838,6 +904,10 @@ class IrrepMultiHeadAttention(nn.Module):
                 device=generators.device, dtype=generators.dtype
             )
 
+            # Precompute transport operators ONCE for this head
+            # This saves 2 matrix exponentials by reusing in both KL and aggregation
+            head_cached_transport = compute_transport_operators(phi, gen_head)
+
             # Compute attention for this head (with optional KL matrices)
             if return_attention:
                 beta_head, kl_head = compute_attention_weights(
@@ -850,6 +920,7 @@ class IrrepMultiHeadAttention(nn.Module):
                     mask,
                     return_kl=True,
                     diagonal_covariance=self.diagonal_covariance,
+                    cached_transport=head_cached_transport,
                 )  # (B, N, N), (B, N, N)
                 all_attention_weights.append(beta_head)
                 all_kl_matrices.append(kl_head)
@@ -864,9 +935,10 @@ class IrrepMultiHeadAttention(nn.Module):
                     mask,
                     return_kl=False,
                     diagonal_covariance=self.diagonal_covariance,
+                    cached_transport=head_cached_transport,
                 )  # (B, N, N)
 
-            # Aggregate messages for this head
+            # Aggregate messages for this head (reuse cached transport!)
             mu_agg, sigma_agg = aggregate_messages(
                 mu_head,
                 sigma_head,
@@ -875,6 +947,7 @@ class IrrepMultiHeadAttention(nn.Module):
                 gen_head,
                 aggregate_mode=self.aggregate_mode,
                 diagonal_covariance=self.diagonal_covariance,
+                cached_transport=head_cached_transport,
             )
 
             head_outputs_mu.append(mu_agg)
