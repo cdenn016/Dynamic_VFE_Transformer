@@ -129,9 +129,9 @@ class MassConfig:
     Each term can be toggled independently for ablation studies.
     """
     use_prior_precision: bool = True      # Λ_p: Prior precision (always on by default)
-    use_observation_precision: bool = False  # Λ_o: Observation precision (sensory grounding)
-    use_incoming_social: bool = False     # Σβ_{ik}Λ̃_{qk}: Being pulled toward neighbors
-    use_outgoing_recoil: bool = False     # Σβ_{ji}Λ_{qi}: Newton's 3rd law recoil
+    use_observation_precision: bool = True   # Λ_o: Observation precision (sensory grounding)
+    use_incoming_social: bool = True      # Σβ_{ik}Λ̃_{qk}: Being pulled toward neighbors
+    use_outgoing_recoil: bool = True      # Σβ_{ji}Λ_{qi}: Newton's 3rd law recoil
 
     # Regularization
     eps: float = 1e-6                     # For numerical stability

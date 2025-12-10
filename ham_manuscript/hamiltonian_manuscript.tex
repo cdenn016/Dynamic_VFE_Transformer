@@ -56,7 +56,7 @@ Hamiltonian Dynamics on Statistical Manifolds}
 
 
 \begin{abstract}
-We introduce \textbf{Reversible Gauge Transformers}, a neural architecture that replaces learned feedforward networks with energy-conserving Hamiltonian dynamics on statistical manifolds. Our approach unifies three theoretical frameworks: (1) gauge theory on principal $\mathrm{SO}(3)$ bundles for computing attention via KL-divergence rather than learned projections, (2) active inference via variational free energy minimization, and (3) symplectic geometry for reversible belief evolution. The key innovation is replacing the standard MLP with a \textbf{leapfrog integrator} that evolves Gaussian beliefs $(\bm{\mu}, \bm{\Sigma}, \bm{\phi})$ through phase space while exactly conserving a Hamiltonian $H = T + V$, where the potential $V$ is the variational free energy. This yields three properties impossible in standard transformers: \textbf{gauge covariance} under internal reference frame changes, \textbf{exact time-reversibility} enabling token-level attribution by trajectory reversal, and \textbf{zero learned parameters} in the feedforward pathway. On language modeling, we demonstrate that Hamiltonian dynamics achieve comparable performance to learned MLPs while enabling mechanistic interpretability through phase-space trajectory analysis. We show output tokens can be traced back to their input origins with $10^{-7}$ numerical precision via momentum reversal.
+We introduce \textbf{Reversible Gauge Transformers}, a neural architecture that replaces learned feedforward networks with energy-conserving Hamiltonian dynamics on statistical manifolds. Our approach unifies three theoretical frameworks: (1) gauge theory on principal $\mathrm{SO}(3)$ bundles for computing attention via KL-divergence rather than learned projections, (2) active inference via variational free energy minimization, and (3) symplectic geometry for reversible belief evolution. The key innovation is replacing the standard MLP with a \textbf{leapfrog integrator} that evolves Gaussian beliefs $(\bm{\mu}, \bm{\Sigma}, \bm{\phi})$ through phase space while conserving a Hamiltonian $H = T + V$, where the potential $V$ is the variational free energy. This yields three properties absent in standard transformers: \textbf{partial gauge covariance} where attention weights are invariant under reference frame changes (though categorical observations necessarily break this symmetry), \textbf{near-exact time-reversibility} enabling token-level attribution by trajectory reversal ($10^{-7}$ precision for mean dynamics), and \textbf{zero MLP parameters} in the feedforward pathway---the dynamics are prescribed by physics, though learned embeddings shape the energy landscape. On language modeling, we demonstrate that Hamiltonian dynamics achieve comparable performance to learned MLPs while enabling mechanistic interpretability through phase-space trajectory analysis.
 \end{abstract}
 
 \begin{keywords}
@@ -299,9 +299,10 @@ We replace the standard FFN with symplectic integration of Hamilton's equations.
 \paragraph{Kinetic Energy and the Mass Matrix.} Following \citet{Dennis2025inertia}, the kinetic terms arise from the natural metrics on each factor, with the Fisher information serving as an inertial mass tensor:
 \begin{align}
 T_\mu &= \frac{1}{2} \pip_\mu^\top M^{-1} \pip_\mu && \text{(Fisher-Rao on $\R^K$)} \label{eq:T_mu}\\
-T_\Sigma &= \frac{1}{4} \tr\left(\Sig^{-1} \dot{\Sig}\, \Sig^{-1} \dot{\Sig}\right) && \text{(Affine-invariant on $\SPD(K)$)} \label{eq:T_sigma}\\
+T_\Sigma &= \tr\left(\pip_\Sigma \Sig \pip_\Sigma \Sig\right) && \text{(Affine-invariant on $\SPD(K)$)} \label{eq:T_sigma}\\
 T_\phi &= \frac{1}{2} \langle \pip_\phi, \pip_\phi \rangle_{\mathfrak{g}} && \text{(Killing form on $\so(3)$)} \label{eq:T_phi}
 \end{align}
+The velocity-momentum relation for $\Sig$ is $\dot{\Sig} = \partial T_\Sigma / \partial \pip_\Sigma = 2\Sig \pip_\Sigma \Sig$, which inverts to $\pip_\Sigma = \frac{1}{2}\Sig^{-1}\dot{\Sig}\Sig^{-1}$. Substituting into $T_\Sigma$ recovers the standard form $\frac{1}{4}\tr(\Sig^{-1}\dot{\Sig}\Sig^{-1}\dot{\Sig})$.
 
 The effective mass matrix $M_i$ for agent $i$ accumulates Fisher information from all sources of constraint \citep{Dennis2025inertia}:
 
@@ -333,6 +334,17 @@ This is the Fisher information matrix of the categorical distribution, which sim
 
 where $\bm{w} \in \R^K$ is a random vector with $P(\bm{w} = \bm{w}_v) = p_v$. This covariance-based formulation reveals a geometric interpretation: the observation precision measures how much the output projection vectors ``spread out'' under the current belief-induced distribution. High-entropy predictions (uniform $\bm{p}$) yield high observation precision, anchoring beliefs more strongly; peaked predictions reduce the effective constraint.
 
+\paragraph{Symmetry Breaking by Categorical Observations.} A crucial theoretical point: while the KL-attention mechanism preserves $\mathrm{SO}(3)$ gauge covariance (attention weights depend only on relative orientations), the categorical observation term \emph{explicitly breaks} this symmetry. The cross-entropy loss $\CE = -\log p_y$ depends on $\bm{W}_{\mathrm{out}}\bm{\mu}$, where $\bm{W}_{\mathrm{out}}$ is a fixed learned matrix that defines preferred directions in belief space. Under a gauge transformation $\bm{\mu} \mapsto R(g)\bm{\mu}$, the loss changes unless $\bm{W}_{\mathrm{out}}$ transforms as $\bm{W}_{\mathrm{out}} R(g)^{-1}$, which it does not (being fixed).
+
+This symmetry breaking is \emph{necessary and desirable}: without it, all tokens would be gauge-equivalent and the model could not distinguish vocabulary items. The learned embeddings and output projection constitute a ``vacuum expectation value'' that spontaneously breaks gauge symmetry, analogous to the Higgs mechanism in field theory. The dynamics preserve gauge symmetry layer by layer, but the task-specific terms anchor beliefs to particular orientations required for language modeling. Gaussian observation models (used in the original active inference formulation) would preserve the symmetry but cannot capture discrete token predictions.
+
+\paragraph{Free Energy Gradients.} For completeness, we provide the explicit gradients needed in \Cref{alg:leapfrog}. For the prior-anchoring term $\KL(q \| p)$:
+\begin{align}
+\frac{\partial \KL(q \| p)}{\partial \bm{\mu}_q} &= \Sig_p^{-1}(\bm{\mu}_q - \bm{\mu}_p) \label{eq:grad_kl_mu}\\
+\frac{\partial \KL(q \| p)}{\partial \Sig_q} &= \frac{1}{2}\left(\Sig_p^{-1} - \Sig_q^{-1}\right) \label{eq:grad_kl_sigma}
+\end{align}
+For the alignment term $\KL(q_i \| \Omega_{ij}[q_j])$, the gradients have the same form but with transported quantities $\tilde{\bm{\mu}}_j = R_{ij}\bm{\mu}_j$ and $\tilde{\Sig}_j = R_{ij}\Sig_j R_{ij}^\top$.
+
 \paragraph{Emergent Nonlinearity.} Standard transformers use ad-hoc nonlinearities like GELU or ReLU in the FFN. In our framework, the nonlinearity emerges naturally from differentiating the softmax attention weights during backpropagation. The gradient of the free energy with respect to beliefs includes:
 \begin{equation}
 \frac{\partial \beta_{ij}}{\partial \bm{\mu}_i} = \frac{\beta_{ij}}{\kappa}\left[\frac{\partial \KL_{ij}}{\partial \bm{\mu}_i} - \sum_k \beta_{ik} \frac{\partial \KL_{ik}}{\partial \bm{\mu}_i}\right]
@@ -344,10 +356,11 @@ This is the softmax Jacobian applied to KL gradients---a principled nonlinearity
 
 \paragraph{Hamilton's Equations.} The equations of motion are:
 \begin{align}
-\dot{\bm{\mu}} &= \frac{\partial H}{\partial \pip_\mu} = \Sig_p \pip_\mu, & \dot{\pip}_\mu &= -\frac{\partial \F}{\partial \bm{\mu}} \label{eq:hamilton_mu}\\
-\dot{\Sig} &= 2\Sig \pip_\Sigma \Sig, & \dot{\pip}_\Sigma &= -\frac{\partial \F}{\partial \Sig} + \text{(curvature)} \label{eq:hamilton_sigma}\\
+\dot{\bm{\mu}} &= \frac{\partial H}{\partial \pip_\mu} = M^{-1} \pip_\mu, & \dot{\pip}_\mu &= -\frac{\partial \F}{\partial \bm{\mu}} \label{eq:hamilton_mu}\\
+\dot{\Sig} &= 2\Sig \pip_\Sigma \Sig, & \dot{\pip}_\Sigma &= -\frac{\partial \F}{\partial \Sig} - 2\pip_\Sigma \Sig \pip_\Sigma \label{eq:hamilton_sigma}\\
 \dot{\bm{\phi}} &= \pip_\phi, & \dot{\pip}_\phi &= -\frac{\partial \F}{\partial \bm{\phi}} \label{eq:hamilton_phi}
 \end{align}
+where $M$ is the full mass matrix from \Cref{eq:mass_matrix}. The term $-2\pip_\Sigma \Sig \pip_\Sigma$ in the $\Sig$ momentum equation is the curvature correction arising from $\partial T_\Sigma / \partial \Sig$ on the SPD manifold.
 
 \paragraph{Leapfrog Integrator.} We use the St\"{o}rmer-Verlet scheme, which is symplectic, time-reversible, and second-order accurate:
 
@@ -355,18 +368,20 @@ This is the softmax Jacobian applied to KL gradients---a principled nonlinearity
 \caption{Leapfrog Integration Step}
 \label{alg:leapfrog}
 \begin{algorithmic}[1]
-\REQUIRE State $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$, timestep $\dt$, prior $(\bm{\mu}_p, \Sig_p)$
+\REQUIRE State $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$, timestep $\dt$, mass $M^{-1}$
 \STATE $\nabla \F \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
 \STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F$
-\STATE $\bm{\mu} \gets \bm{\mu} + \dt \cdot \Sig_p \pip_\mu$ \COMMENT{Full-step position}
-\STATE $\Sig \gets \Sig + \dt \cdot 2\Sig \pip_\Sigma \Sig$ \COMMENT{SPD geodesic step}
+\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} (\nabla_\Sigma \F + 2\pip_\Sigma \Sig \pip_\Sigma)$ \COMMENT{Include curvature}
+\STATE $\bm{\mu} \gets \bm{\mu} + \dt \cdot M^{-1} \pip_\mu$ \COMMENT{Full-step position}
+\STATE $\Sig \gets \exp_\Sig(\dt \cdot 2\Sig \pip_\Sigma \Sig)$ \COMMENT{SPD exponential map}
 \STATE $\nabla \F' \gets \textsc{ComputeFreeEnergyGradients}(\bm{\mu}, \Sig, \bm{\phi})$
 \STATE $\pip_\mu \gets \pip_\mu - \frac{\dt}{2} \nabla_\mu \F'$ \COMMENT{Half-step momentum}
-\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} \nabla_\Sigma \F'$
+\STATE $\pip_\Sigma \gets \pip_\Sigma - \frac{\dt}{2} (\nabla_\Sigma \F' + 2\pip_\Sigma \Sig \pip_\Sigma)$
 \RETURN $(\bm{\mu}, \Sig, \bm{\phi}, \pip_\mu, \pip_\Sigma, \pip_\phi)$
 \end{algorithmic}
 \end{algorithm}
+
+\noindent where $\exp_\Sig(\cdot)$ denotes the Riemannian exponential map on $\SPD(K)$, and $M^{-1}$ is the inverse of the full mass matrix (\Cref{eq:mass_matrix}).
 
 \subsection{Full Architecture}
 
@@ -402,24 +417,29 @@ The practical consequence is stability: unlike Euler or Runge-Kutta methods, whi
 
 \subsection{Gauge Covariance}
 
-The architecture respects a global $\mathrm{SO}(3)$ symmetry: simultaneous rotation of all internal reference frames leaves the dynamics invariant. This is the formal statement that ``same direction'' is defined only relative to other agents, not absolutely.
+The attention mechanism respects a global $\mathrm{SO}(3)$ symmetry: simultaneous rotation of all internal reference frames leaves the attention weights invariant. We formalize this while being explicit about where the symmetry is broken.
 
-\begin{theorem}[Gauge Covariance]
+\begin{theorem}[Partial Gauge Covariance]
 \label{thm:gauge}
-The Hamiltonian $H$ is invariant under simultaneous gauge transformation of all agents:
+Under simultaneous gauge transformation of all agents:
 \begin{equation}
 g \cdot (\bm{\mu}_i, \Sig_i, \bm{\phi}_i) = (R(g)\bm{\mu}_i, R(g)\Sig_i R(g)^\top, \mathrm{Ad}_g \bm{\phi}_i)
 \end{equation}
-where $\mathrm{Ad}_g$ is the adjoint action on $\so(3)$. Consequently, dynamics preserve gauge covariance.
+where $\mathrm{Ad}_g$ is the adjoint action on $\so(3)$, the following hold:
+\begin{enumerate}
+    \item The attention weights $\beta_{ij}$ are exactly invariant.
+    \item The kinetic energy $T = T_\mu + T_\Sigma + T_\phi$ is exactly invariant.
+    \item The alignment term $\sum_{ij}\beta_{ij}\KL(q_i \| \Omega_{ij}[q_j])$ is exactly invariant.
+    \item The prior-anchoring term $\KL(q_i \| p_i)$ breaks symmetry (priors are fixed).
+    \item The observation term $\CE$ breaks symmetry (output projection is fixed).
+\end{enumerate}
 \end{theorem}
 
 \begin{proof}
-We verify invariance term by term. The parallel transport operator transforms as $\Omega_{ij} \mapsto R(g)\Omega_{ij}R(g)^{-1}$, so the transported belief $\Omega_{ij}[q_j]$ transforms covariantly. The KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is invariant because both arguments transform identically. The prior-anchoring term $\KL(q_i \| p_i)$ is invariant if priors transform alongside beliefs. The kinetic terms $T_\mu$, $T_\Sigma$, $T_\phi$ are constructed from bi-invariant metrics (Fisher-Rao on $\R^K$, affine-invariant on $\SPD(K)$, Killing form on $\so(3)$), hence invariant. The observation term $\CE$ depends only on $\bm{W}_{\mathrm{out}}\bm{\mu}$, which is invariant if $\bm{W}_{\mathrm{out}}$ transforms as $\bm{W}_{\mathrm{out}} R(g)^{-1}$.
-
-Since $H$ is gauge-invariant, Noether's theorem implies a conserved quantity---the total ``angular momentum'' in belief space. Gauge covariance is preserved along trajectories.
+The parallel transport operator transforms as $\Omega_{ij} \mapsto R(g)\Omega_{ij}R(g)^{-1}$, so the transported belief $\Omega_{ij}[q_j]$ transforms covariantly. The KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is invariant because both arguments transform identically, establishing (1) and (3). The kinetic terms are constructed from bi-invariant metrics, establishing (2). The prior $p_i = \N(\bm{\mu}_p, \Sig_p)$ is a fixed learned embedding that does not transform, so $\KL(q_i \| p_i) \mapsto \KL(R(g)\cdot q_i \| p_i) \neq \KL(q_i \| p_i)$ in general, establishing (4). Similarly, $\CE$ depends on $\bm{W}_{\mathrm{out}}\bm{\mu}$, which transforms non-trivially since $\bm{W}_{\mathrm{out}}$ is fixed, establishing (5).
 \end{proof}
 
-Gauge covariance has an important practical implication: the network cannot exploit absolute orientation in latent space, only relative orientations between tokens. This is a strong inductive bias that may improve generalization. Note that while the \emph{dynamics} preserve gauge symmetry, the \emph{observation term} $\CE$ explicitly breaks it---predictions depend on the absolute orientation of $\bm{\mu}$ relative to output embeddings $\bm{W}_{\mathrm{out}}$. This symmetry breaking is necessary: without it, the network could not distinguish tokens. Training learns embeddings that break gauge symmetry in a task-appropriate way, analogous to spontaneous symmetry breaking in field theory.
+The practical implication is that the \emph{layer-internal dynamics} (attention computation) are gauge-covariant, but the \emph{task interface} (embedding lookup and output projection) breaks the symmetry. This breaking is necessary: without it, all tokens would be gauge-equivalent. The learned embeddings select a preferred gauge, analogous to spontaneous symmetry breaking in field theory (see the ``Symmetry Breaking by Categorical Observations'' discussion in \S\ref{sec:hamiltonian_ffn}).
 
 \subsection{Exact Reversibility}
 
@@ -694,7 +714,15 @@ The second term in $\dot{\pip}_\mu$ is the ``reservoir force''---the influence o
 
 \subsection{Limitations}
 
-Several limitations warrant acknowledgment. Computational cost is the most immediate concern: each FFN requires $n_{\mathrm{steps}}$ gradient computations, compared to a single forward pass through a learned MLP. [TBD: wall-clock timing comparison from experiments.] Hyperparameter sensitivity presents another challenge; the timestep $\dt$, number of integration steps $n_{\mathrm{steps}}$, and initial momentum scale all require tuning and interact in non-obvious ways. Scale remains untested: our experiments are small-scale, and large-model behavior---including potential instabilities at high dimension---is unknown. Finally, maintaining the SPD constraint $\Sig \in \SPD(K)$ requires numerical care during integration; eigenvalue clamping or Cholesky reparameterization may be necessary at scale.
+Several limitations warrant acknowledgment.
+
+\paragraph{Gradient Flow.} By design, gradients do not flow through the Hamiltonian dynamics during backpropagation. Outputs are detached from the integration graph: the FFN is a fixed (but configuration-dependent) nonlinear transformation during any given forward pass. Training adjusts only the embeddings $(\bm{\mu}_p, \Sig_p)$, output projection $\bm{W}_{\mathrm{out}}$, and attention-related parameters. This is intentional---allowing gradients through the dynamics would break the symplectic structure and reversibility guarantees. However, it means the dynamics themselves cannot be ``learned'' in the usual sense; instead, training reshapes the energy landscape through which beliefs evolve.
+
+\paragraph{Computational Cost.} Each FFN requires $n_{\mathrm{steps}}$ gradient computations for the free energy, compared to a single forward pass through a learned MLP. For typical configurations ($n_{\mathrm{steps}} = 10$, $K = 64$), this adds approximately $10\times$ computational overhead per FFN. The mass matrix computation (\Cref{eq:mass_matrix}) with all four terms enabled adds further cost from matrix inversions and transport operations.
+
+\paragraph{Hyperparameters.} The timestep $\dt$, number of integration steps $n_{\mathrm{steps}}$, attention temperature $\kappa$, and initial momentum scale all require tuning and interact non-trivially. Unlike learned MLPs where architecture choices are discrete, Hamiltonian dynamics introduce continuous hyperparameters that affect both performance and stability.
+
+\paragraph{Scale.} Our experiments are small-scale, and large-model behavior---including potential instabilities at high dimension---is unknown. The SPD constraint $\Sig \in \SPD(K)$ requires numerical care; eigenvalue clamping or Cholesky reparameterization may be necessary at scale.
 
 %=============================================================================
 \section{Conclusion}
