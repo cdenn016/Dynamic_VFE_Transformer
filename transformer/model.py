@@ -217,6 +217,9 @@ class GaugeTransformerLM(nn.Module):
             ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
             ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
             diagonal_covariance=diagonal_covariance,
+            # Sparse attention
+            attention_pattern=self.attention_pattern,
+            attention_window=self.attention_window,
         )
 
         # =================================================================
