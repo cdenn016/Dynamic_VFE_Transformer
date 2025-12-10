@@ -234,16 +234,14 @@ GPU_OPTIMIZED_CONFIG = {
 
     # Hamiltonian FFN parameters
     # =========================================================================
-    # SPEED vs PHYSICS FIDELITY TRADEOFF:
-    #   n_steps=2  → Fast (~0.1-0.3s/step), good for development
-    #   n_steps=10 → Moderate (~1-2s/step), reasonable physics
-    #   n_steps=25 → Slow (~3-5s/step), high physics fidelity
-    # The leapfrog loop is sequential - GPU can't parallelize it!
-    # For full GPU utilization: use ffn_mode='learned' instead
+    # ENERGY CONSERVATION: For |ΔH| < 1.0, need small dt and enough steps
+    #   dt=0.01, n_steps=4  → |ΔH| ~ 0.01-0.1 (stable)
+    #   dt=0.05, n_steps=2  → |ΔH| ~ 10-1000 (UNSTABLE!)
+    # Larger vocab (5K vs 256) has steeper gradients → need smaller dt
     # =========================================================================
-    'ffn_hamiltonian_dt': 0.05,           # Larger dt works with fewer steps
-    'ffn_hamiltonian_n_steps': 2,         # TOGGLE THIS for speed vs physics!
-    'ffn_hamiltonian_momentum_scale': 0.5,
+    'ffn_hamiltonian_dt': 0.01,            # Was 0.05 - smaller for stability
+    'ffn_hamiltonian_n_steps': 4,          # Was 2 - more steps for accuracy
+    'ffn_hamiltonian_momentum_scale': 0.1, # Was 0.5 - gentler kicks
     'ffn_hamiltonian_gamma': 0.0,
     'ffn_hamiltonian_mass_use_prior': True,
     'ffn_hamiltonian_mass_use_observation': False,
@@ -253,14 +251,14 @@ GPU_OPTIMIZED_CONFIG = {
     'gauge_fixed_priors': False,
 
     # Training (scaled for GPU)
-    'max_steps': 500,         # More steps for convergence
+    'max_steps': 1000,        # Was 500 - need more for 5K vocab
 
-    # Learning rates (same natural gradient rates)
-    'mu_lr': 0.25,
-    'sigma_lr': 0.05,
-    'phi_lr': 0.1,
-    'ffn_lr': 0.25,
-    'warmup_steps': 20,
+    # Learning rates (lower for larger vocab - steeper gradients)
+    'mu_lr': 0.1,             # Was 0.25
+    'sigma_lr': 0.02,         # Was 0.05
+    'phi_lr': 0.05,           # Was 0.1
+    'ffn_lr': 0.1,            # Was 0.25
+    'warmup_steps': 50,       # Was 20 - longer warmup for stability
 
     # Free energy weights
     'alpha': 0.2,
