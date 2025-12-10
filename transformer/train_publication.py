@@ -219,6 +219,12 @@ PUBLICATION_CONFIG = {
     'ffn_hamiltonian_mass_use_observation': False,    # Λ_o: Observation precision (sensory grounding)
     'ffn_hamiltonian_mass_use_incoming_social': False, # Σβ_{ik}Λ̃_{qk}: Being pulled toward neighbors
     'ffn_hamiltonian_mass_use_outgoing_recoil': False, # Σβ_{ji}Λ_{qi}: Newton's 3rd law recoil
+    'ffn_hamiltonian_evolve_mass': False,             # Recompute M at each leapfrog step (full theory)
+
+    # Gauge-Fixed Priors (for restoring gauge covariance)
+    # When enabled, priors are p_i = R_i ▷ p_0 where R_i = exp(φ_i · T)
+    # This guarantees p_i = Ω_ij[p_j], making prior-anchoring gauge covariant
+    'gauge_fixed_priors': False,                      # Use SO(3)-rotated base prior
 
     # Training (optimized for convergence)
     'batch_size': 8,             # Larger batches for stability

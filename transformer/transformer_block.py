@@ -88,6 +88,7 @@ class GaugeTransformerBlock(nn.Module):
         ffn_hamiltonian_mass_use_observation: bool = False,
         ffn_hamiltonian_mass_use_incoming_social: bool = False,
         ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
+        ffn_hamiltonian_evolve_mass: bool = False,
     ):
         """
         Initialize gauge transformer block.
@@ -119,6 +120,7 @@ class GaugeTransformerBlock(nn.Module):
             ffn_hamiltonian_mass_use_observation: Include observation precision in mass
             ffn_hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
             ffn_hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
+            ffn_hamiltonian_evolve_mass: Recompute mass at each leapfrog step (hamiltonian)
         """
         super().__init__()
         self.embed_dim = embed_dim
@@ -173,6 +175,7 @@ class GaugeTransformerBlock(nn.Module):
             hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
             hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
             hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
+            hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
         )
 
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -405,6 +408,7 @@ class GaugeTransformerStack(nn.Module):
         ffn_hamiltonian_mass_use_observation: bool = False,
         ffn_hamiltonian_mass_use_incoming_social: bool = False,
         ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
+        ffn_hamiltonian_evolve_mass: bool = False,
     ):
         """
         Initialize stack of transformer blocks.
@@ -437,6 +441,7 @@ class GaugeTransformerStack(nn.Module):
             ffn_hamiltonian_mass_use_observation: Include observation precision in mass
             ffn_hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
             ffn_hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
+            ffn_hamiltonian_evolve_mass: Recompute mass at each leapfrog step (hamiltonian)
         """
         super().__init__()
         self.n_layers = n_layers
@@ -473,6 +478,7 @@ class GaugeTransformerStack(nn.Module):
                 ffn_hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
                 ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
                 ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
+                ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
             )
             for _ in range(n_layers)
         ])
