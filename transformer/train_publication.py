@@ -177,17 +177,24 @@ DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU setting
 # =============================================================================
 # GPU-OPTIMIZED CONFIG (RTX 5090 / 32GB VRAM)
 # =============================================================================
-# Use this for maximum throughput on high-end GPUs
+# Pushing toward Vaswani "Attention is All You Need" scale
+# Note: Gauge transformer has O(K²) memory per token due to covariances
+#
+# Memory estimate: B × N × K² × 4 bytes × layers ≈ GPU memory
+# With B=128, N=256, K=127, L=6: ~3.1GB for covariances alone
+# Plus attention matrices, gradients, activations → fits in 32GB
+#
 GPU_OPTIMIZED_CONFIG = {
-    # Model architecture (scaled up for GPU)
+    # Model architecture (scaled toward Vaswani)
+    # Vaswani base: d_model=512, but gauge transformer has K² memory cost
     'vocab_size': 256,        # Full byte-level vocab
-    'embed_dim': 63,          # K=63 (ODD - required for SO(3) irreps!) 3x larger
-    'n_layers': 6,            # Deeper for better learning
-    'hidden_dim': 252,        # 4×embed_dim
-    'max_seq_len': 128,       # N=128 (longer context)
+    'embed_dim': 127,         # K=127 (ODD for SO(3)) - 2x larger, closer to Vaswani
+    'n_layers': 6,            # Same as Vaswani base
+    'hidden_dim': 508,        # 4×embed_dim (Vaswani uses 2048 for d=512)
+    'max_seq_len': 256,       # N=256 (Vaswani used 512 for translation)
 
-    # GPU Training optimizations
-    'batch_size': 64,         # Much larger batches for GPU utilization
+    # GPU Training optimizations - PUSH THE RTX 5090!
+    'batch_size': 32,         # Start conservative, increase if memory allows
     'use_amp': False,         # Disabled - Hamiltonian dynamics needs FP32 precision
     'num_workers': 4,         # Parallel data loading
 
@@ -201,7 +208,7 @@ GPU_OPTIMIZED_CONFIG = {
 
     # Attention pattern
     'attention_pattern': 'full',
-    'attention_window': 128,
+    'attention_window': 256,
     'attention_global_tokens': 0,
 
     # Variational FFN parameters
@@ -212,7 +219,7 @@ GPU_OPTIMIZED_CONFIG = {
     'ffn_n_iterations': 1,
     'ffn_learnable_lr': True,
     'ffn_pattern': 'full',
-    'ffn_window': 128,
+    'ffn_window': 256,
 
     # Hamiltonian FFN parameters
     'ffn_hamiltonian_dt': 0.01,
@@ -253,12 +260,12 @@ GPU_OPTIMIZED_CONFIG = {
     'checkpoint_interval': 100,
     'patience': 5,
 
-    # Irrep structure (for K=63)
-    # 19×1 + 8×3 + 4×5 = 19 + 24 + 20 = 63 ✓
+    # Irrep structure (for K=127)
+    # 39×1 + 16×3 + 8×5 = 39 + 48 + 40 = 127 ✓
     'irrep_spec': [
-        ('ℓ0', 19, 1),   # 19 dimensions (scalars)
-        ('ℓ1', 8, 3),    # 24 dimensions (vectors)
-        ('ℓ2', 4, 5),    # 20 dimensions (rank-2 tensors)
+        ('ℓ0', 39, 1),   # 39 dimensions (scalars)
+        ('ℓ1', 16, 3),   # 48 dimensions (vectors)
+        ('ℓ2', 8, 5),    # 40 dimensions (rank-2 tensors)
     ],
 }
 
@@ -1134,7 +1141,7 @@ def main():
         print("\n" + "="*70)
         print("🚀 GPU-OPTIMIZED MODE (RTX 5090 / High-end GPU)")
         print("="*70)
-        print("   batch_size=64, use_amp=True, embed_dim=63, seq_len=128")
+        print("   batch_size=32, embed_dim=127, seq_len=256 (Vaswani-scale)")
         print("   This will fully utilize your GPU!")
         print("="*70 + "\n")
         base_config = GPU_OPTIMIZED_CONFIG.copy()
