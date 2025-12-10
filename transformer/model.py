@@ -28,6 +28,15 @@ from transformer.embeddings import GaugeTokenEmbedding, GaugePositionalEncoding
 from transformer.transformer_block import GaugeTransformerStack
 from transformer.attention import create_attention_mask
 
+# Trajectory tracking (optional)
+try:
+    from transformer.trajectory_tracking import get_global_recorder
+    TRAJECTORY_TRACKING_AVAILABLE = True
+except ImportError:
+    TRAJECTORY_TRACKING_AVAILABLE = False
+    def get_global_recorder():
+        return None
+
 # Try to import generators (fallback to random if unavailable)
 try:
     from math_utils.generators import generate_so3_generators
@@ -270,12 +279,24 @@ class GaugeTransformerLM(nn.Module):
         device = token_ids.device
 
         # =================================================================
+        # Trajectory Recording: Start forward pass
+        # =================================================================
+        recorder = get_global_recorder() if TRAJECTORY_TRACKING_AVAILABLE else None
+        if recorder is not None and recorder.enabled:
+            ffn_mode = self.config.get('ffn_mode', 'learned')
+            recorder.start_forward(batch_size, num_agents, ffn_mode=ffn_mode)
+
+        # =================================================================
         # 1. Token Embeddings (0D: one per agent at c*, not per spatial point)
         # =================================================================
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
         # Save initial embeddings as priors for variational FFN
         mu_prior = mu_q.clone()
+
+        # Record embeddings for trajectory tracking
+        if recorder is not None and recorder.enabled:
+            recorder.record_embeddings(mu_q, sigma_q, phi)
 
         # =================================================================
         # 2. Add Agent-Index Encoding to Gauge Frames
@@ -329,6 +350,12 @@ class GaugeTransformerLM(nn.Module):
         # 5. Project to Vocabulary (one prediction per agent)
         # =================================================================
         logits = self.out_proj(mu_q)  # (B, N, V)
+
+        # =================================================================
+        # Trajectory Recording: End forward pass
+        # =================================================================
+        if recorder is not None and recorder.enabled:
+            recorder.end_forward(mu_q, logits)
 
         if return_agents:
             agent_states = {
