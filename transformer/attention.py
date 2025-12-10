@@ -624,6 +624,7 @@ def aggregate_messages(
 
     # Step 4: Covariance aggregation (if requested)
     if aggregate_mode == 'full_distribution':
+        B, N, K = mu_q.shape
         if diagonal_covariance:
             # DIAGONAL MODE: sigma_q is (B, N, K)
             # For diagonal, transport doesn't change variance (approximation)
