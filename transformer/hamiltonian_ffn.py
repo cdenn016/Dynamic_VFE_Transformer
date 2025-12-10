@@ -1246,6 +1246,7 @@ class LeapfrogIntegrator(nn.Module):
         beta: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         W_out: Optional[torch.Tensor] = None,
+        trajectory_callback: Optional[callable] = None,
     ) -> PhaseSpaceState:
         """
         Multiple leapfrog steps.
@@ -1258,9 +1259,25 @@ class LeapfrogIntegrator(nn.Module):
             beta: Attention weights
             targets: Target tokens
             W_out: Output projection
+            trajectory_callback: Optional callback(step, state, H, T, V) for recording
         """
-        for _ in range(self.n_steps):
+        for step_idx in range(self.n_steps):
             state = self.step(state, mu_prior, Sigma_prior, M_inv, beta, targets, W_out)
+
+            # Record trajectory if callback provided
+            if trajectory_callback is not None:
+                # Compute energy for diagnostic
+                T = self.kinetic.total_kinetic(state, M_inv)
+                V, _ = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
+                H = T + V
+                trajectory_callback(
+                    step_idx + 1,  # 0 is initial state
+                    state,
+                    H.mean().item(),
+                    T.mean().item(),
+                    V.mean().item(),
+                )
+
         return state
 
 
@@ -1546,9 +1563,32 @@ class HamiltonianFFN(nn.Module):
                 if self.update_phi:
                     state.pi_phi = state.pi_phi * (1 - self.gamma * self.dt)
 
+            # Build trajectory callback if global recorder is available
+            trajectory_callback = None
+            try:
+                from transformer.trajectory_tracking import get_global_recorder
+                recorder = get_global_recorder()
+                if recorder is not None and recorder.enabled and recorder.record_leapfrog:
+                    def trajectory_callback(step, st, H, T, V):
+                        recorder.record_leapfrog_step(
+                            step=step,
+                            mu=st.mu,
+                            Sigma=st.Sigma,
+                            phi=st.phi,
+                            pi_mu=st.pi_mu,
+                            pi_Sigma=st.pi_Sigma,
+                            H=H, T=T, V=V,
+                        )
+                    # Record initial state (step=0)
+                    trajectory_callback(0, state, H_init.mean().item(),
+                                       T_init.mean().item(), V_init.mean().item())
+            except ImportError:
+                pass  # Trajectory tracking not available
+
             # Symplectic integration (using M_inv for position updates)
             state = self.integrator.integrate(
-                state, mu_prior_dyn, Sigma_prior_dyn, M_inv, beta_dyn, targets, W_out
+                state, mu_prior_dyn, Sigma_prior_dyn, M_inv, beta_dyn, targets, W_out,
+                trajectory_callback=trajectory_callback,
             )
 
             # Compute final Hamiltonian
