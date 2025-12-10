@@ -61,7 +61,7 @@ from typing import Dict, List, Tuple, Any
 
 
 from transformer.model import GaugeTransformerLM
-from transformer.data import create_byte_dataloaders
+from transformer.data import create_dataloaders
 from transformer.train import compute_free_energy_loss
 from transformer.train_fast import FastTrainer, FastTrainingConfig
 from transformer.publication_metrics import PublicationMetrics, AblationConfig, AblationResult
@@ -190,7 +190,7 @@ DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU setting
 GPU_OPTIMIZED_CONFIG = {
     # Model architecture - WITH diagonal_covariance=True, can scale up!
     # Diagonal mode: O(N²×K) memory instead of O(N²×K²)
-    'vocab_size': 256,        # Full byte-level vocab
+    'vocab_size': 5000,       # BPE subwords (top 5K from GPT-2 tokenizer)
     'embed_dim': 255,         # K=255 (ODD for SO(3)) - close to Vaswani d=512!
     'n_layers': 6,            # Match Vaswani base
     'hidden_dim': 1020,       # 4×embed_dim
@@ -800,17 +800,17 @@ def run_single_experiment(
     save_experiment_config(config, ffn_mode, exp_checkpoint_dir, args)
 
     # =================================================================
-    # Data Loading (Byte-level - no external packages required!)
+    # Data Loading (BPE tokenization using GPT-2 tokenizer)
     # =================================================================
 
     print("\n" + "="*70)
-    print("LOADING WIKITEXT-2 WITH BYTE-LEVEL ENCODING")
+    print("LOADING WIKITEXT-2 WITH BPE TOKENIZATION")
     print("="*70)
 
-    train_loader, val_loader, actual_vocab_size = create_byte_dataloaders(
+    train_loader, val_loader, actual_vocab_size = create_dataloaders(
         max_seq_len=config['max_seq_len'],
         batch_size=config['batch_size'],
-        vocab_size=config['vocab_size'],  # Up to 256 bytes
+        vocab_size=config['vocab_size'],  # Top K BPE tokens
         num_workers=config.get('num_workers', 0),
     )
 
@@ -827,7 +827,7 @@ def run_single_experiment(
     print(f"  N (seq len): {config['max_seq_len']}")
     print(f"  K (embed): {config['embed_dim']}")
     print(f"  Layers: {config['n_layers']}")
-    print(f"  Vocab: {actual_vocab_size} (byte-level)")
+    print(f"  Vocab: {actual_vocab_size} (BPE)")
 
     model = GaugeTransformerLM(config)
     model = model.to(device)
