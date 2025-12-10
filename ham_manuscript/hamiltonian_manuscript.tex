@@ -429,17 +429,38 @@ where $\mathrm{Ad}_g$ is the adjoint action on $\so(3)$, the following hold:
 \begin{enumerate}
     \item The attention weights $\beta_{ij}$ are exactly invariant.
     \item The kinetic energy $T = T_\mu + T_\Sigma + T_\phi$ is exactly invariant.
-    \item The alignment term $\sum_{ij}\beta_{ij}\KL(q_i \| \Omega_{ij}[q_j])$ is exactly invariant.
-    \item The prior-anchoring term $\KL(q_i \| p_i)$ breaks symmetry (priors are fixed).
+    \item The belief alignment term $\sum_{ij}\beta_{ij}\KL(q_i \| \Omega_{ij}[q_j])$ is exactly invariant.
+    \item The prior alignment term $\sum_{ij}\gamma_{ij}\KL(p_i \| \Omega_{ij}[p_j])$ is exactly invariant.
+    \item The prior-anchoring term $\KL(q_i \| p_i)$ breaks symmetry unless priors are coherent.
     \item The observation term $\CE$ breaks symmetry (output projection is fixed).
 \end{enumerate}
 \end{theorem}
 
 \begin{proof}
-The parallel transport operator transforms as $\Omega_{ij} \mapsto R(g)\Omega_{ij}R(g)^{-1}$, so the transported belief $\Omega_{ij}[q_j]$ transforms covariantly. The KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is invariant because both arguments transform identically, establishing (1) and (3). The kinetic terms are constructed from bi-invariant metrics, establishing (2). The prior $p_i = \N(\bm{\mu}_p, \Sig_p)$ is a fixed learned embedding that does not transform, so $\KL(q_i \| p_i) \mapsto \KL(R(g)\cdot q_i \| p_i) \neq \KL(q_i \| p_i)$ in general, establishing (4). Similarly, $\CE$ depends on $\bm{W}_{\mathrm{out}}\bm{\mu}$, which transforms non-trivially since $\bm{W}_{\mathrm{out}}$ is fixed, establishing (5).
+The parallel transport operator transforms as $\Omega_{ij} \mapsto R(g)\Omega_{ij}R(g)^{-1}$, so the transported belief $\Omega_{ij}[q_j]$ transforms covariantly. The KL divergence $\KL(q_i \| \Omega_{ij}[q_j])$ is invariant because both arguments transform identically under $g$, establishing (1) and (3). By identical reasoning, the prior alignment term $\KL(p_i \| \Omega_{ij}[p_j])$ is invariant when priors transform covariantly, establishing (4). The kinetic terms are constructed from bi-invariant metrics, establishing (2).
+
+For (5), the prior $p_i = \N(\bm{\mu}_p, \Sig_p)$ is typically a fixed learned embedding that does not transform, so $\KL(q_i \| p_i) \mapsto \KL(R(g)\cdot q_i \| p_i) \neq \KL(q_i \| p_i)$ in general. However, if priors satisfy the \emph{coherence condition} $p_i = \Omega_{ij}[p_j]$ for all $i,j$, then $p_i$ can be replaced by any transported prior without changing the functional, effectively restoring covariance. Similarly, $\CE$ depends on $\bm{W}_{\mathrm{out}}\bm{\mu}$, which transforms non-trivially since $\bm{W}_{\mathrm{out}}$ is fixed, establishing (6).
 \end{proof}
 
 The practical implication is that the \emph{layer-internal dynamics} (attention computation) are gauge-covariant, but the \emph{task interface} (embedding lookup and output projection) breaks the symmetry. This breaking is necessary: without it, all tokens would be gauge-equivalent. The learned embeddings select a preferred gauge, analogous to spontaneous symmetry breaking in field theory (see the ``Symmetry Breaking by Categorical Observations'' discussion in \S\ref{sec:hamiltonian_ffn}).
+
+\paragraph{Restoring Prior Gauge Covariance.} The prior-anchoring term $\KL(q_i \| p_i)$ breaks gauge covariance because independently learned priors $p_i$ need not be related by parallel transport. Two approaches can restore covariance:
+
+\emph{Approach 1: Prior coherence regularization.} Add the gauge-covariant regularizer:
+\begin{equation}
+\mathcal{L}_\gamma = \sum_{i,j} \gamma_{ij} \cdot \KL(p_i \| \Omega_{ij}[p_j])
+\label{eq:prior_coherence}
+\end{equation}
+where $\gamma_{ij}$ are softmax weights analogous to the attention weights $\beta_{ij}$. This term is exactly gauge-invariant (both KL arguments transform under the same $g_i$) and encourages priors to form a \emph{flat connection}---i.e., $p_i \approx \Omega_{ij}[p_j]$ for all pairs. When $\mathcal{L}_\gamma \to 0$, the prior bundle has vanishing ``torsion'' and the prior-anchoring term becomes effectively covariant: any $p_i$ can be expressed as a transported version of any other $p_j$.
+
+\emph{Approach 2: Gauge-fixed priors by construction.} Define priors as $\mathrm{SO}(3)$-rotations of a shared base prior:
+\begin{equation}
+p_i = R_i \triangleright p_0 \quad \text{where} \quad R_i \triangleright \N(\bm{\mu}_0, \Sig_0) := \N(R_i\bm{\mu}_0, R_i\Sig_0 R_i^\top)
+\label{eq:rotated_priors}
+\end{equation}
+Here $p_0 = \N(\bm{\mu}_0, \Sig_0)$ is a single learned base prior and $R_i \in \mathrm{SO}(3)$ is a learned per-token rotation. The connection becomes $\Omega_{ij} = R_i R_j^{-1}$, which automatically satisfies $p_i = \Omega_{ij}[p_j]$. This eliminates the need for the $\gamma$-regularizer during training while guaranteeing gauge covariance by construction.
+
+Under either approach, the \emph{only} symmetry breaking comes from the categorical observation term---which is necessary for making predictions in a specific vocabulary frame. This is the minimal possible breaking: internal dynamics are fully covariant, and symmetry is broken only at the task interface.
 
 \subsection{Exact Reversibility}
 
