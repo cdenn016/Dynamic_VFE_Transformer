@@ -1104,6 +1104,8 @@ class IrrepMultiHeadAttention(nn.Module):
         epsilon: float = 1e-8,
         aggregate_mode: str = 'mean_only',
         diagonal_covariance: bool = False,
+        attention_pattern: str = 'full',
+        attention_window: int = 64,
     ):
         """
         Initialize irrep-structured multi-head attention.
@@ -1116,6 +1118,11 @@ class IrrepMultiHeadAttention(nn.Module):
             epsilon: Numerical stability constant
             aggregate_mode: 'mean_only' or 'full_distribution'
             diagonal_covariance: If True, sigma is (B,N,K) diagonal variances
+            attention_pattern: 'full', 'local', or 'sparse'
+                - 'full': O(N²) standard attention
+                - 'local': O(N×W) efficient local window attention
+                - 'sparse': Use sparse computation with provided mask
+            attention_window: Window size for 'local' pattern
         """
         super().__init__()
         self.diagonal_covariance = diagonal_covariance
@@ -1124,6 +1131,8 @@ class IrrepMultiHeadAttention(nn.Module):
         self.kappa_beta = kappa_beta
         self.epsilon = epsilon
         self.aggregate_mode = aggregate_mode
+        self.attention_pattern = attention_pattern
+        self.attention_window = attention_window
 
         # Build irrep block structure
         self.irrep_dims = []
@@ -1250,7 +1259,40 @@ class IrrepMultiHeadAttention(nn.Module):
                 head_cached_transport = compute_transport_operators(phi, gen_head)
 
             # Compute attention for this head (with optional KL matrices)
-            if return_attention:
+            # Use efficient sparse attention if pattern is 'local'
+            if self.attention_pattern == 'local':
+                # O(N×W) efficient local window attention
+                beta_head, kl_head = compute_attention_weights_local(
+                    mu_head,
+                    sigma_head,
+                    phi,
+                    gen_head,
+                    kappa=self.kappa_beta,
+                    window=self.attention_window,
+                    epsilon=self.epsilon,
+                    causal=(mask is not None),  # Assume causal if mask provided
+                    diagonal_covariance=self.diagonal_covariance,
+                )  # (B, N, N), (B, N, N)
+                if return_attention:
+                    all_attention_weights.append(beta_head)
+                    all_kl_matrices.append(kl_head)
+            elif self.attention_pattern == 'sparse' and mask is not None:
+                # O(M×K³) sparse attention for arbitrary masks
+                beta_head, kl_head = compute_attention_weights_sparse(
+                    mu_head,
+                    sigma_head,
+                    phi,
+                    gen_head,
+                    kappa=self.kappa_beta,
+                    mask=mask,
+                    epsilon=self.epsilon,
+                    diagonal_covariance=self.diagonal_covariance,
+                )  # (B, N, N), (B, N, N)
+                if return_attention:
+                    all_attention_weights.append(beta_head)
+                    all_kl_matrices.append(kl_head)
+            elif return_attention:
+                # Full O(N²) attention with KL return
                 beta_head, kl_head = compute_attention_weights(
                     mu_head,
                     sigma_head,
@@ -1266,6 +1308,7 @@ class IrrepMultiHeadAttention(nn.Module):
                 all_attention_weights.append(beta_head)
                 all_kl_matrices.append(kl_head)
             else:
+                # Full O(N²) attention without KL return
                 beta_head = compute_attention_weights(
                     mu_head,
                     sigma_head,
@@ -1278,6 +1321,7 @@ class IrrepMultiHeadAttention(nn.Module):
                     diagonal_covariance=self.diagonal_covariance,
                     cached_transport=head_cached_transport,
                 )  # (B, N, N)
+                kl_head = None  # Not computed
 
             # Aggregate messages for this head (reuse cached transport!)
             mu_agg, sigma_agg = aggregate_messages(

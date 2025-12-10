@@ -100,6 +100,9 @@ class GaugeTransformerBlock(nn.Module):
         ffn_hamiltonian_evolve_mass: bool = False,
         # Diagonal covariance mode
         diagonal_covariance: bool = False,
+        # Sparse attention
+        attention_pattern: str = 'full',
+        attention_window: int = 64,
     ):
         """
         Initialize gauge transformer block.
@@ -112,6 +115,8 @@ class GaugeTransformerBlock(nn.Module):
             dropout: Dropout probability
             evolve_sigma: If True, update covariances via attention and FFN
             evolve_phi: If True, update gauge frames via FFN
+            attention_pattern: 'full', 'local', or 'sparse' for efficient attention
+            attention_window: Window size for local attention pattern
             generators: SO(3) generators (required for variational/hamiltonian modes)
             ffn_mode: 'learned'/'standard', 'VFE'/'variational_gradient_engine', 'hamiltonian'
             ffn_alpha: Prior weight for variational/hamiltonian FFN
@@ -152,6 +157,8 @@ class GaugeTransformerBlock(nn.Module):
             epsilon=1e-8,
             aggregate_mode='full_distribution' if evolve_sigma else 'mean_only',
             diagonal_covariance=diagonal_covariance,
+            attention_pattern=attention_pattern,
+            attention_window=attention_window,
         )
 
         self.norm1 = nn.LayerNorm(embed_dim)
@@ -437,6 +444,9 @@ class GaugeTransformerStack(nn.Module):
         ffn_hamiltonian_evolve_mass: bool = False,
         # Diagonal covariance mode
         diagonal_covariance: bool = False,
+        # Sparse attention
+        attention_pattern: str = 'full',
+        attention_window: int = 64,
     ):
         """
         Initialize stack of transformer blocks.
@@ -470,6 +480,8 @@ class GaugeTransformerStack(nn.Module):
             ffn_hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
             ffn_hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
             ffn_hamiltonian_evolve_mass: Recompute mass at each leapfrog step (hamiltonian)
+            attention_pattern: 'full', 'local', or 'sparse' for efficient attention
+            attention_window: Window size for local attention pattern
         """
         super().__init__()
         self.n_layers = n_layers
@@ -509,6 +521,9 @@ class GaugeTransformerStack(nn.Module):
                 ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
                 # Diagonal covariance mode
                 diagonal_covariance=diagonal_covariance,
+                # Sparse attention
+                attention_pattern=attention_pattern,
+                attention_window=attention_window,
             )
             for _ in range(n_layers)
         ])
