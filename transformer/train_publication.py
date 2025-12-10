@@ -177,24 +177,27 @@ DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU setting
 # =============================================================================
 # GPU-OPTIMIZED CONFIG (RTX 5090 / 32GB VRAM)
 # =============================================================================
-# Pushing toward Vaswani "Attention is All You Need" scale
-# Note: Gauge transformer has O(K²) memory per token due to covariances
+# MEMORY REALITY CHECK:
+#   Gauge transformer has O(N² × K²) memory for attention KL matrices!
+#   Standard transformer: O(N² × d) for attention
+#   Ours: O(N² × K²) because KL divergence uses full covariance matrices
 #
-# Memory estimate: B × N × K² × 4 bytes × layers ≈ GPU memory
-# With B=128, N=256, K=127, L=6: ~3.1GB for covariances alone
-# Plus attention matrices, gradients, activations → fits in 32GB
+#   Memory for KL computation: B × N × N × K² × 4 bytes (FP32)
+#   Example: B=32, N=256, K=127 → 32 × 256 × 256 × 127² × 4 = ~134GB (!)
+#
+#   Realistic for 32GB: B=16, N=64, K=63 → ~2GB for KL matrices
 #
 GPU_OPTIMIZED_CONFIG = {
-    # Model architecture (scaled toward Vaswani)
-    # Vaswani base: d_model=512, but gauge transformer has K² memory cost
+    # Model architecture (realistic for 32GB VRAM)
+    # Can't match Vaswani d=512 due to K² memory cost!
     'vocab_size': 256,        # Full byte-level vocab
-    'embed_dim': 127,         # K=127 (ODD for SO(3)) - 2x larger, closer to Vaswani
-    'n_layers': 6,            # Same as Vaswani base
-    'hidden_dim': 508,        # 4×embed_dim (Vaswani uses 2048 for d=512)
-    'max_seq_len': 256,       # N=256 (Vaswani used 512 for translation)
+    'embed_dim': 63,          # K=63 (ODD for SO(3)) - realistic for memory
+    'n_layers': 4,            # Fewer layers to save memory
+    'hidden_dim': 252,        # 4×embed_dim
+    'max_seq_len': 64,        # N=64 - attention is O(N²×K²)!
 
-    # GPU Training optimizations - PUSH THE RTX 5090!
-    'batch_size': 32,         # Start conservative, increase if memory allows
+    # GPU Training - fits in 32GB
+    'batch_size': 16,         # Conservative for memory
     'use_amp': False,         # Disabled - Hamiltonian dynamics needs FP32 precision
     'num_workers': 4,         # Parallel data loading
 
@@ -208,7 +211,7 @@ GPU_OPTIMIZED_CONFIG = {
 
     # Attention pattern
     'attention_pattern': 'full',
-    'attention_window': 256,
+    'attention_window': 64,
     'attention_global_tokens': 0,
 
     # Variational FFN parameters
@@ -219,7 +222,7 @@ GPU_OPTIMIZED_CONFIG = {
     'ffn_n_iterations': 1,
     'ffn_learnable_lr': True,
     'ffn_pattern': 'full',
-    'ffn_window': 256,
+    'ffn_window': 64,
 
     # Hamiltonian FFN parameters
     # =========================================================================
@@ -268,12 +271,12 @@ GPU_OPTIMIZED_CONFIG = {
     'checkpoint_interval': 100,
     'patience': 5,
 
-    # Irrep structure (for K=127)
-    # 39×1 + 16×3 + 8×5 = 39 + 48 + 40 = 127 ✓
+    # Irrep structure (for K=63)
+    # 19×1 + 8×3 + 4×5 = 19 + 24 + 20 = 63 ✓
     'irrep_spec': [
-        ('ℓ0', 39, 1),   # 39 dimensions (scalars)
-        ('ℓ1', 16, 3),   # 48 dimensions (vectors)
-        ('ℓ2', 8, 5),    # 40 dimensions (rank-2 tensors)
+        ('ℓ0', 19, 1),   # 19 dimensions (scalars)
+        ('ℓ1', 8, 3),    # 24 dimensions (vectors)
+        ('ℓ2', 4, 5),    # 20 dimensions (rank-2 tensors)
     ],
 }
 
