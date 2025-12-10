@@ -861,6 +861,7 @@ class IrrepMultiHeadAttention(nn.Module):
         generators: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         return_attention: bool = False,
+        cached_head_transports: Optional[List[dict]] = None,  # Cross-layer cache
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass through multi-head attention.
@@ -872,6 +873,9 @@ class IrrepMultiHeadAttention(nn.Module):
             generators: (3, K, K) SO(3) generators
             mask: (B, N, N) optional causal mask
             return_attention: If True, return attention weights and KL matrices
+            cached_head_transports: Optional list of precomputed transport dicts, one per head.
+                                   When evolve_phi=False, this can be computed once at model
+                                   entry and reused across all layers (6× speedup).
 
         Returns:
             mu_out: (B, N, K) updated means
@@ -904,9 +908,13 @@ class IrrepMultiHeadAttention(nn.Module):
                 device=generators.device, dtype=generators.dtype
             )
 
-            # Precompute transport operators ONCE for this head
-            # This saves 2 matrix exponentials by reusing in both KL and aggregation
-            head_cached_transport = compute_transport_operators(phi, gen_head)
+            # Get transport operators: use cross-layer cache if provided, else compute
+            if cached_head_transports is not None:
+                # Cross-layer cache: reuse transport computed at model entry
+                head_cached_transport = cached_head_transports[head_idx]
+            else:
+                # Within-layer cache: compute once, reuse for KL and aggregation
+                head_cached_transport = compute_transport_operators(phi, gen_head)
 
             # Compute attention for this head (with optional KL matrices)
             if return_attention:
@@ -1035,6 +1043,35 @@ class IrrepMultiHeadAttention(nn.Module):
                 start_idx += dim
 
             return sigma_full
+
+    def precompute_head_transports(
+        self,
+        phi: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> List[dict]:
+        """
+        Precompute transport operators for all heads.
+
+        Call this once at model entry when evolve_phi=False, then pass the result
+        to forward() as cached_head_transports to skip redundant matrix exponentials.
+
+        Args:
+            phi: (B, N, 3) gauge frames
+            device: Device for generators
+            dtype: Dtype for generators
+
+        Returns:
+            List of transport dicts, one per head. Each dict contains:
+                'exp_phi': (B, N, dim, dim)
+                'exp_neg_phi': (B, N, dim, dim)
+                'Omega': (B, N, N, dim, dim)
+        """
+        cached_transports = []
+        for head_idx in range(self.n_heads):
+            gen_head = self.head_generators[head_idx].gen.to(device=device, dtype=dtype)
+            cached_transports.append(compute_transport_operators(phi, gen_head))
+        return cached_transports
 
     def extra_repr(self) -> str:
         return (

@@ -295,6 +295,20 @@ class GaugeTransformerLM(nn.Module):
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)  # (B, N, N)
 
         # =================================================================
+        # 3.5. Precompute Transport Operators (when evolve_phi=False)
+        # =================================================================
+        # When phi doesn't evolve, we can compute transport operators once
+        # and reuse across all layers, saving ~6× matrix exponential calls.
+        if not self.evolve_phi:
+            # Get the first block's attention layer to access head generators
+            first_attention = self.transformer.blocks[0].attention
+            cached_head_transports = first_attention.precompute_head_transports(
+                phi, device, mu_q.dtype
+            )
+        else:
+            cached_head_transports = None
+
+        # =================================================================
         # 4. Forward Through Transformer Stack
         # =================================================================
         mu_q, sigma_q, phi, intermediates = self.transformer(
@@ -305,6 +319,7 @@ class GaugeTransformerLM(nn.Module):
             mask=mask,
             mu_prior=mu_prior,  # Pass priors for variational FFN
             return_intermediates=return_agents,
+            cached_head_transports=cached_head_transports,
         )
 
         # =================================================================
@@ -371,12 +386,22 @@ class GaugeTransformerLM(nn.Module):
         )
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
 
+        # Precompute transport operators when evolve_phi=False (saves ~6× matrix exps)
+        if not self.evolve_phi:
+            first_attention = self.transformer.blocks[0].attention
+            cached_head_transports = first_attention.precompute_head_transports(
+                phi, device, mu_q.dtype
+            )
+        else:
+            cached_head_transports = None
+
         # Forward through transformer blocks (all but last without attention tracking)
         for block in self.transformer.blocks[:-1]:
             mu_q, sigma_q, phi = block(
                 mu_q, sigma_q, phi, self.generators, mask, mu_prior,
                 targets=targets,  # Pass targets for E-step
                 W_out=self.out_proj.weight if hasattr(self.out_proj, 'weight') else None,
+                cached_head_transports=cached_head_transports,
             )
 
         # Final block WITH attention tracking
@@ -391,6 +416,7 @@ class GaugeTransformerLM(nn.Module):
             self.generators,
             mask=mask,
             return_attention=True,  # Get β_ij and KL_ij
+            cached_head_transports=cached_head_transports,
         )
 
         # Complete final block forward (residual + FFN)

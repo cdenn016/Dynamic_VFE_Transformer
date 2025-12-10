@@ -212,6 +212,7 @@ class GaugeTransformerBlock(nn.Module):
         mu_prior: Optional[torch.Tensor] = None,  # For variational FFN
         targets: Optional[torch.Tensor] = None,   # For E-step observations
         W_out: Optional[torch.Tensor] = None,     # Output projection for discrete observations
+        cached_head_transports: Optional[list] = None,  # Cross-layer transport cache
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass through transformer block.
@@ -225,6 +226,8 @@ class GaugeTransformerBlock(nn.Module):
             mu_prior: Embedding priors (B, N, K) - required for variational FFN
             targets: Target token IDs (B, N) - for E-step discrete observations
             W_out: Output projection (V, K) - for computing CE gradient in E-step
+            cached_head_transports: Optional list of precomputed transport dicts per head.
+                                   When evolve_phi=False, reuse across all layers.
 
         Returns:
             mu_q_out: Updated means (B, N, K)
@@ -249,6 +252,7 @@ class GaugeTransformerBlock(nn.Module):
             generators,
             mask=mask,
             return_attention=need_beta,  # Only compute if needed
+            cached_head_transports=cached_head_transports,  # Cross-layer cache
         )
 
         # Residual connection + dropout on means
@@ -505,6 +509,7 @@ class GaugeTransformerStack(nn.Module):
         mask: Optional[torch.Tensor] = None,
         mu_prior: Optional[torch.Tensor] = None,  # For variational FFN
         return_intermediates: bool = False,
+        cached_head_transports: Optional[list] = None,  # Cross-layer transport cache
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[List]]:
         """
         Forward through all transformer blocks.
@@ -517,6 +522,8 @@ class GaugeTransformerStack(nn.Module):
             mask: Optional causal mask
             mu_prior: Embedding priors (B, N, K) - for variational FFN
             return_intermediates: If True, return states after each layer
+            cached_head_transports: Optional list of precomputed transport dicts per head.
+                                   When evolve_phi=False, reuse across all layers (6× speedup).
 
         Returns:
             mu_q: Final means (B, N, K)
@@ -527,7 +534,10 @@ class GaugeTransformerStack(nn.Module):
         intermediates = [] if return_intermediates else None
 
         for layer_idx, block in enumerate(self.blocks):
-            mu_q, sigma_q, phi = block(mu_q, sigma_q, phi, generators, mask, mu_prior)
+            mu_q, sigma_q, phi = block(
+                mu_q, sigma_q, phi, generators, mask, mu_prior,
+                cached_head_transports=cached_head_transports,
+            )
 
             if return_intermediates:
                 intermediates.append({
