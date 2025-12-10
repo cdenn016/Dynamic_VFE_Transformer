@@ -456,12 +456,14 @@ class InertiaOfBeliefMass(nn.Module):
         M = 0.5 * (M + M.transpose(-1, -2))
 
         # Ensure minimum eigenvalue for stability
-        eigenvalues, eigenvectors = torch.linalg.eigh(M)
+        # IMPORTANT: Force FP32 for eigendecomposition (fails under FP16/AMP)
+        M_fp32 = M.float()
+        eigenvalues, eigenvectors = torch.linalg.eigh(M_fp32)
         eigenvalues = torch.clamp(eigenvalues, min=self.config.min_eigenvalue)
-        M = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
+        M = (eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
 
         # Compute inverse
-        M_inv = eigenvectors @ torch.diag_embed(1.0 / eigenvalues) @ eigenvectors.transpose(-1, -2)
+        M_inv = (eigenvectors @ torch.diag_embed(1.0 / eigenvalues) @ eigenvectors.transpose(-1, -2)).to(dtype)
 
         return M, M_inv
 
@@ -481,14 +483,15 @@ def ensure_spd(Sigma: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
 
     Σ_spd = V max(Λ, ε) Vᵀ
     """
-    # Eigendecomposition
-    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma)
+    # Eigendecomposition (force FP32 for numerical stability under AMP)
+    orig_dtype = Sigma.dtype
+    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma.float())
 
     # Clip eigenvalues to be positive
     eigenvalues_clipped = torch.clamp(eigenvalues, min=eps)
 
-    # Reconstruct
-    Sigma_spd = eigenvectors @ torch.diag_embed(eigenvalues_clipped) @ eigenvectors.transpose(-1, -2)
+    # Reconstruct and cast back to original dtype
+    Sigma_spd = (eigenvectors @ torch.diag_embed(eigenvalues_clipped) @ eigenvectors.transpose(-1, -2)).to(orig_dtype)
 
     return symmetrize(Sigma_spd)
 
@@ -645,18 +648,19 @@ def spd_exponential_map(Sigma: torch.Tensor, V: torch.Tensor, eps: float = 1e-8)
     Maps tangent vector V at Σ to a point on the SPD manifold.
     """
     # Regularize Sigma
+    orig_dtype = Sigma.dtype
     Sigma = symmetrize(Sigma)
     Sigma = Sigma + eps * torch.eye(Sigma.shape[-1], device=Sigma.device, dtype=Sigma.dtype)
 
-    # Matrix square root via eigendecomposition
-    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma)
+    # Matrix square root via eigendecomposition (force FP32 for stability under AMP)
+    eigenvalues, eigenvectors = torch.linalg.eigh(Sigma.float())
     eigenvalues = torch.clamp(eigenvalues, min=eps)
 
     Sigma_sqrt = eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
     Sigma_inv_sqrt = eigenvectors @ torch.diag_embed(1.0 / torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
 
     # W = Σ^{-1/2} V Σ^{-1/2}
-    W = Sigma_inv_sqrt @ V @ Sigma_inv_sqrt
+    W = Sigma_inv_sqrt @ V.float() @ Sigma_inv_sqrt
     W = symmetrize(W)  # Ensure symmetric for matrix exp
 
     # exp(W) via eigendecomposition (more stable than torch.matrix_exp for symmetric)
@@ -666,7 +670,7 @@ def spd_exponential_map(Sigma: torch.Tensor, V: torch.Tensor, eps: float = 1e-8)
     # exp_Σ(V) = Σ^{1/2} exp(W) Σ^{1/2}
     Sigma_new = Sigma_sqrt @ exp_W @ Sigma_sqrt
 
-    return ensure_spd(Sigma_new, eps)
+    return ensure_spd(Sigma_new.to(orig_dtype), eps)
 
 
 # =============================================================================
@@ -1482,10 +1486,10 @@ class HamiltonianFFN(nn.Module):
 
         # Sample π_μ from N(0, M)
         # π_μ = M^{1/2} · z where z ~ N(0, I)
-        # Compute M^{1/2} via eigendecomposition
-        eigenvalues, eigenvectors = torch.linalg.eigh(M)
+        # Compute M^{1/2} via eigendecomposition (force FP32 for stability under AMP)
+        eigenvalues, eigenvectors = torch.linalg.eigh(M.float())
         eigenvalues = torch.clamp(eigenvalues, min=self.eps)
-        M_sqrt = eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)
+        M_sqrt = (eigenvectors @ torch.diag_embed(torch.sqrt(eigenvalues)) @ eigenvectors.transpose(-1, -2)).to(dtype)
 
         noise_mu = torch.randn(B, N, K, device=device, dtype=dtype)
         pi_mu = self.momentum_scale * torch.einsum('...ij,...j->...i', M_sqrt, noise_mu)
