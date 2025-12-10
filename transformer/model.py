@@ -207,8 +207,12 @@ class GaugeTransformerLM(nn.Module):
         self.out_proj = nn.Linear(embed_dim, vocab_size, bias=False)
 
         # Tie input/output embeddings (standard practice)
-        if tie_embeddings:
+        # Note: Can't tie weights when gauge_fixed_priors=True since there's
+        # no per-token embedding - just a single base_mu rotated per token
+        if tie_embeddings and not gauge_fixed_priors:
             self.out_proj.weight = self.token_embed.mu_embed.weight
+        elif tie_embeddings and gauge_fixed_priors:
+            print("Warning: tie_embeddings disabled because gauge_fixed_priors=True")
 
         # =================================================================
         # Initialize Weights
