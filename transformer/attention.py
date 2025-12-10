@@ -617,6 +617,339 @@ def _compute_kl_matrix_diagonal(
 
 
 # =============================================================================
+# Efficient Local Window Attention (O(N×W) instead of O(N²))
+# =============================================================================
+
+def compute_attention_weights_local(
+    mu_q: torch.Tensor,        # (B, N, K) belief means
+    sigma_q: torch.Tensor,     # (B, N, K, K) or (B, N, K) if diagonal
+    phi: torch.Tensor,         # (B, N, 3) gauge frames
+    generators: torch.Tensor,  # (3, K, K) SO(3) generators
+    kappa: float,              # Temperature
+    window: int,               # Local attention window size
+    epsilon: float = 1e-8,     # Numerical stability
+    causal: bool = True,       # Causal masking
+    diagonal_covariance: bool = False,  # Use diagonal sigma
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Efficient LOCAL window attention - O(N×W) instead of O(N²).
+
+    Each token i attends only to tokens in [max(0, i-W), i] (causal)
+    or [max(0, i-W//2), min(N, i+W//2+1)] (bidirectional).
+
+    This avoids computing the full N×N KL matrix by:
+    1. Only computing transport operators for local pairs
+    2. Using sparse iteration over the window
+
+    Args:
+        mu_q: Query belief means, shape (B, N, K)
+        sigma_q: Query covariances, (B, N, K, K) or (B, N, K) if diagonal
+        phi: Gauge frames, shape (B, N, 3)
+        generators: SO(3) generators, shape (3, K, K)
+        kappa: Temperature parameter
+        window: Local attention window size
+        epsilon: Softmax stability constant
+        causal: If True, apply causal masking (can only attend to past)
+        diagonal_covariance: If True, sigma_q is (B, N, K) diagonal
+
+    Returns:
+        beta: Sparse attention weights as dense (B, N, N) with zeros outside window
+        kl_matrix: Sparse KL divergences as dense (B, N, N) with inf outside window
+
+    Complexity:
+        - Full attention: O(B × N² × K³)
+        - Local attention: O(B × N × W × K³)
+        - Speedup: N/W (e.g., 16x for N=1024, W=64)
+    """
+    B, N, K = mu_q.shape
+    device = mu_q.device
+    dtype = mu_q.dtype
+    eps = 1e-6
+
+    # Allocate sparse KL matrix (inf for invalid pairs)
+    kl_matrix = torch.full((B, N, N), float('inf'), device=device, dtype=dtype)
+
+    # Precompute per-token transport components (O(N×K³) for matrix exp)
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
+    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+
+    # For each relative position in the window, compute KL in batch
+    if causal:
+        # Causal: attend to positions [i-W+1, i] (including self)
+        rel_positions = range(-window + 1, 1)  # [-W+1, -W+2, ..., -1, 0]
+    else:
+        # Bidirectional: attend to positions [i-W//2, i+W//2]
+        half_w = window // 2
+        rel_positions = range(-half_w, half_w + 1)
+
+    for rel_pos in rel_positions:
+        # Compute indices: i attends to j = i + rel_pos
+        if rel_pos >= 0:
+            i_start, i_end = 0, N - rel_pos
+            j_start, j_end = rel_pos, N
+        else:
+            i_start, i_end = -rel_pos, N
+            j_start, j_end = 0, N + rel_pos
+
+        n_pairs = i_end - i_start
+        if n_pairs <= 0:
+            continue
+
+        # Slice tensors for this relative position
+        # Query tokens: positions i_start to i_end
+        mu_i = mu_q[:, i_start:i_end, :]           # (B, n_pairs, K)
+        phi_i_exp = exp_phi[:, i_start:i_end, :, :]  # (B, n_pairs, K, K)
+
+        # Key tokens: positions j_start to j_end
+        mu_j = mu_q[:, j_start:j_end, :]           # (B, n_pairs, K)
+        phi_j_neg_exp = exp_neg_phi[:, j_start:j_end, :, :]  # (B, n_pairs, K, K)
+
+        # Compute transport: Omega_ij = exp(phi_i) @ exp(-phi_j)
+        # Shape: (B, n_pairs, K, K)
+        Omega = torch.einsum('bpkl,bplm->bpkm', phi_i_exp, phi_j_neg_exp)
+
+        # Transport mu_j to i's frame: mu_j_transported = Omega @ mu_j
+        mu_j_transported = torch.einsum('bpkl,bpl->bpk', Omega, mu_j)  # (B, n_pairs, K)
+
+        if diagonal_covariance:
+            # Diagonal KL (efficient)
+            sigma_i = sigma_q[:, i_start:i_end, :]  # (B, n_pairs, K)
+            sigma_j = sigma_q[:, j_start:j_end, :]  # (B, n_pairs, K)
+
+            # Clamp for stability
+            sigma_i = sigma_i.clamp(min=eps)
+            sigma_j = sigma_j.clamp(min=eps)
+
+            # KL terms
+            trace_term = (sigma_i / sigma_j).sum(dim=-1)  # (B, n_pairs)
+            delta_mu = mu_j_transported - mu_i
+            mahal_term = ((delta_mu ** 2) / sigma_j).sum(dim=-1)  # (B, n_pairs)
+            logdet_term = (torch.log(sigma_j) - torch.log(sigma_i)).sum(dim=-1)
+
+            kl_vals = 0.5 * (trace_term + mahal_term - K + logdet_term)
+        else:
+            # Full covariance KL
+            sigma_i = sigma_q[:, i_start:i_end, :, :]  # (B, n_pairs, K, K)
+            sigma_j = sigma_q[:, j_start:j_end, :, :]  # (B, n_pairs, K, K)
+
+            # Transport sigma_j: Sigma_j_transported = Omega @ Sigma_j @ Omega^T
+            Sigma_j_transported = torch.einsum(
+                'bpkl,bplm,bpmn->bpkn',
+                Omega, sigma_j, Omega.transpose(-1, -2)
+            )  # (B, n_pairs, K, K)
+
+            # Compute KL via Cholesky
+            I = torch.eye(K, device=device, dtype=dtype)
+            sigma_i_reg = sigma_i + eps * I
+            Sigma_j_reg = Sigma_j_transported + eps * I
+
+            try:
+                L_p = torch.linalg.cholesky(Sigma_j_reg)
+                Y = torch.linalg.solve_triangular(L_p, sigma_i_reg, upper=False)
+                Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+                trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)
+
+                delta_mu = mu_j_transported - mu_i
+                v = torch.linalg.solve_triangular(
+                    L_p, delta_mu.unsqueeze(-1), upper=False
+                ).squeeze(-1)
+                mahal_term = torch.sum(v ** 2, dim=-1)
+
+                logdet_p = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                L_q = torch.linalg.cholesky(sigma_i_reg)
+                logdet_q = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                logdet_term = logdet_p - logdet_q
+
+                kl_vals = 0.5 * (trace_term + mahal_term - K + logdet_term)
+            except RuntimeError:
+                # Fallback: set to large value
+                kl_vals = torch.full((B, n_pairs), 100.0, device=device, dtype=dtype)
+
+        kl_vals = torch.clamp(kl_vals, min=0.0)
+
+        # Scatter into KL matrix
+        i_indices = torch.arange(i_start, i_end, device=device)
+        j_indices = torch.arange(j_start, j_end, device=device)
+        kl_matrix[:, i_indices, j_indices] = kl_vals
+
+    # Convert KL to attention weights
+    logits = -kl_matrix / kappa
+    beta = F.softmax(logits, dim=-1)
+
+    # Add epsilon for stability
+    beta = beta + epsilon
+    beta = beta / beta.sum(dim=-1, keepdim=True)
+
+    return beta, kl_matrix
+
+
+def compute_attention_weights_sparse(
+    mu_q: torch.Tensor,        # (B, N, K)
+    sigma_q: torch.Tensor,     # (B, N, K, K) or (B, N, K)
+    phi: torch.Tensor,         # (B, N, 3)
+    generators: torch.Tensor,  # (3, K, K)
+    kappa: float,
+    mask: torch.Tensor,        # (B, N, N) or (N, N) sparse mask
+    epsilon: float = 1e-8,
+    diagonal_covariance: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sparse attention that only computes KL for valid mask entries.
+
+    For sparse masks with M << N² valid entries, this is O(M×K³) instead of O(N²×K³).
+
+    Args:
+        mu_q: Query means (B, N, K)
+        sigma_q: Query covariances
+        phi: Gauge frames (B, N, 3)
+        generators: SO(3) generators (3, K, K)
+        kappa: Temperature
+        mask: Binary mask where 1 = can attend, 0 = cannot attend
+        epsilon: Numerical stability
+        diagonal_covariance: Use diagonal covariances
+
+    Returns:
+        beta: Attention weights (B, N, N) - zeros where mask=0
+        kl_matrix: KL divergences (B, N, N) - inf where mask=0
+    """
+    B, N, K = mu_q.shape
+    device = mu_q.device
+    dtype = mu_q.dtype
+
+    # Expand mask if needed
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0).expand(B, -1, -1)
+
+    # Count valid pairs per row
+    valid_counts = mask.sum(dim=-1)  # (B, N)
+    total_valid = mask.sum().item()
+    total_pairs = B * N * N
+
+    # Heuristic: if more than 30% valid, use full computation
+    sparsity_ratio = total_valid / total_pairs
+    if sparsity_ratio > 0.3:
+        # Fall back to full computation with masking
+        kl_matrix = torch.zeros(B, N, N, device=device, dtype=dtype)
+        if diagonal_covariance:
+            _compute_kl_matrix_diagonal(mu_q, sigma_q, phi, generators, kl_matrix, None)
+        else:
+            _compute_kl_matrix_torch(mu_q, sigma_q, phi, generators, kl_matrix, None)
+
+        logits = -kl_matrix / kappa
+        logits = logits.masked_fill(mask == 0, float('-inf'))
+        beta = F.softmax(logits, dim=-1)
+        beta = beta + epsilon
+        beta = beta / beta.sum(dim=-1, keepdim=True)
+        return beta, kl_matrix
+
+    # Sparse computation: iterate over valid pairs
+    kl_matrix = torch.full((B, N, N), float('inf'), device=device, dtype=dtype)
+
+    # Find valid (i, j) pairs
+    valid_indices = mask.nonzero(as_tuple=False)  # (M, 3) where M = number of valid pairs
+
+    if valid_indices.numel() == 0:
+        # No valid pairs - return uniform attention
+        beta = torch.ones(B, N, N, device=device, dtype=dtype) / N
+        return beta, kl_matrix
+
+    # Precompute transport components
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
+    exp_phi = torch.matrix_exp(phi_matrix)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)
+
+    eps = 1e-6
+
+    # Process in batches to limit memory
+    batch_size_sparse = min(1024, valid_indices.shape[0])
+
+    for start in range(0, valid_indices.shape[0], batch_size_sparse):
+        end = min(start + batch_size_sparse, valid_indices.shape[0])
+        batch_indices = valid_indices[start:end]  # (batch, 3)
+
+        b_idx = batch_indices[:, 0]
+        i_idx = batch_indices[:, 1]
+        j_idx = batch_indices[:, 2]
+
+        # Gather relevant tensors
+        mu_i = mu_q[b_idx, i_idx]      # (batch, K)
+        mu_j = mu_q[b_idx, j_idx]      # (batch, K)
+        exp_phi_i = exp_phi[b_idx, i_idx]      # (batch, K, K)
+        exp_neg_phi_j = exp_neg_phi[b_idx, j_idx]  # (batch, K, K)
+
+        # Compute Omega = exp(phi_i) @ exp(-phi_j)
+        Omega = torch.bmm(exp_phi_i, exp_neg_phi_j)  # (batch, K, K)
+
+        # Transport mu_j
+        mu_j_transported = torch.bmm(Omega, mu_j.unsqueeze(-1)).squeeze(-1)
+
+        if diagonal_covariance:
+            sigma_i = sigma_q[b_idx, i_idx].clamp(min=eps)  # (batch, K)
+            sigma_j = sigma_q[b_idx, j_idx].clamp(min=eps)
+
+            trace_term = (sigma_i / sigma_j).sum(dim=-1)
+            delta_mu = mu_j_transported - mu_i
+            mahal_term = ((delta_mu ** 2) / sigma_j).sum(dim=-1)
+            logdet_term = (torch.log(sigma_j) - torch.log(sigma_i)).sum(dim=-1)
+
+            kl_vals = 0.5 * (trace_term + mahal_term - K + logdet_term)
+        else:
+            sigma_i = sigma_q[b_idx, i_idx]  # (batch, K, K)
+            sigma_j = sigma_q[b_idx, j_idx]
+
+            # Transport sigma_j
+            Sigma_j_transported = torch.bmm(torch.bmm(Omega, sigma_j), Omega.transpose(-1, -2))
+
+            # KL computation
+            I = torch.eye(K, device=device, dtype=dtype)
+            sigma_i_reg = sigma_i + eps * I
+            Sigma_j_reg = Sigma_j_transported + eps * I
+
+            try:
+                L_p = torch.linalg.cholesky(Sigma_j_reg)
+                Y = torch.linalg.solve_triangular(L_p, sigma_i_reg, upper=False)
+                Z = torch.linalg.solve_triangular(L_p.transpose(-1, -2), Y, upper=True)
+                trace_term = torch.diagonal(Z, dim1=-2, dim2=-1).sum(dim=-1)
+
+                delta_mu = mu_j_transported - mu_i
+                v = torch.linalg.solve_triangular(
+                    L_p, delta_mu.unsqueeze(-1), upper=False
+                ).squeeze(-1)
+                mahal_term = torch.sum(v ** 2, dim=-1)
+
+                logdet_p = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_p, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                L_q = torch.linalg.cholesky(sigma_i_reg)
+                logdet_q = 2.0 * torch.sum(
+                    torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1) + eps), dim=-1
+                )
+                logdet_term = logdet_p - logdet_q
+
+                kl_vals = 0.5 * (trace_term + mahal_term - K + logdet_term)
+            except RuntimeError:
+                kl_vals = torch.full((end - start,), 100.0, device=device, dtype=dtype)
+
+        kl_vals = torch.clamp(kl_vals, min=0.0)
+
+        # Scatter to output
+        kl_matrix[b_idx, i_idx, j_idx] = kl_vals
+
+    # Convert to attention
+    logits = -kl_matrix / kappa
+    beta = F.softmax(logits, dim=-1)
+    beta = beta + epsilon
+    beta = beta / beta.sum(dim=-1, keepdim=True)
+
+    return beta, kl_matrix
+
+
+# =============================================================================
 # Message Aggregation with Parallel Transport
 # =============================================================================
 
