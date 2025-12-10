@@ -188,7 +188,7 @@ GPU_OPTIMIZED_CONFIG = {
 
     # GPU Training optimizations
     'batch_size': 64,         # Much larger batches for GPU utilization
-    'use_amp': True,          # Mixed precision (FP16) - 2x speedup
+    'use_amp': False,         # Disabled - Hamiltonian dynamics needs FP32 precision
     'num_workers': 4,         # Parallel data loading
 
     # Gauge transformer parameters

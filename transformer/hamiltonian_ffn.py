@@ -880,10 +880,17 @@ class HamiltonianPotential(nn.Module):
         KL = (1/2)[tr(Σ_p⁻¹ Σ_q) + (μ_p - μ_q)ᵀ Σ_p⁻¹ (μ_p - μ_q) - K + log(det Σ_p / det Σ_q)]
         """
         K = mu_q.shape[-1]
+        orig_dtype = mu_q.dtype
+
+        # Force FP32 for numerical operations (slogdet/inv don't support FP16)
+        Sigma_q = Sigma_q.float()
+        Sigma_p = Sigma_p.float()
+        mu_q = mu_q.float()
+        mu_p = mu_p.float()
 
         # Regularize
-        Sigma_q = Sigma_q + self.eps * torch.eye(K, device=Sigma_q.device, dtype=Sigma_q.dtype)
-        Sigma_p = Sigma_p + self.eps * torch.eye(K, device=Sigma_p.device, dtype=Sigma_p.dtype)
+        Sigma_q = Sigma_q + self.eps * torch.eye(K, device=Sigma_q.device, dtype=torch.float32)
+        Sigma_p = Sigma_p + self.eps * torch.eye(K, device=Sigma_p.device, dtype=torch.float32)
 
         # Inverse of prior
         Sigma_p_inv = torch.linalg.inv(Sigma_p)
@@ -901,7 +908,7 @@ class HamiltonianPotential(nn.Module):
         log_det_term = log_det_p - log_det_q
 
         kl = 0.5 * (trace_term + mahal - K + log_det_term)
-        return kl
+        return kl.to(orig_dtype)
 
     def forward(
         self,
