@@ -37,6 +37,20 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import matplotlib.patches as mpatches
+import warnings
+
+# Trajectory tracking imports (optional - used for detailed Hamiltonian trajectory recording)
+try:
+    from transformer.trajectory_tracking import (
+        enable_trajectory_tracking,
+        disable_trajectory_tracking,
+        get_global_recorder,
+        TrajectoryRecorder,
+    )
+    TRAJECTORY_TRACKING_AVAILABLE = True
+except ImportError:
+    TRAJECTORY_TRACKING_AVAILABLE = False
+    TrajectoryRecorder = None
 
 
 # =============================================================================
@@ -280,9 +294,15 @@ class PhysicsMetrics:
         self,
         save_name: str = "energy_conservation",
         figsize: Tuple[int, int] = (14, 5)
-    ) -> plt.Figure:
+    ) -> Optional[plt.Figure]:
         """Plot energy conservation over training."""
         if not self.history:
+            import warnings
+            warnings.warn(
+                "plot_energy_conservation: No physics history recorded. "
+                "Ensure PhysicsMetrics.record() is called during training "
+                "with Hamiltonian FFN diagnostics."
+            )
             return None
 
         steps = [s.step for s in self.history]
@@ -535,9 +555,14 @@ class TrainingDynamicsTracker:
         self,
         save_name: str = "training_curves",
         figsize: Tuple[int, int] = (16, 10),
-    ) -> plt.Figure:
+    ) -> Optional[plt.Figure]:
         """Generate comprehensive training curves figure."""
         if not self.history:
+            import warnings
+            warnings.warn(
+                "plot_training_curves: No training history recorded. "
+                "Ensure TrainingDynamicsTracker.record_step() is called during training."
+            )
             return None
 
         fig = plt.figure(figsize=figsize)
@@ -1379,35 +1404,66 @@ class PublicationMetrics:
 
     def generate_all_figures(self, dt_scaling_results: Optional[Dict] = None):
         """Generate all publication figures."""
+        figures_generated = []
+        figures_skipped = []
+
         # Training curves
-        self.training.plot_training_curves(
+        fig = self.training.plot_training_curves(
             save_name=f"{self.experiment_name}_training"
         )
+        if fig is not None:
+            figures_generated.append("training_curves")
+            plt.close(fig)
+        else:
+            figures_skipped.append("training_curves (no training history)")
 
-        # Physics
-        self.physics.plot_energy_conservation(
+        # Physics - energy conservation
+        fig = self.physics.plot_energy_conservation(
             save_name=f"{self.experiment_name}_energy"
         )
+        if fig is not None:
+            figures_generated.append("energy_conservation")
+            plt.close(fig)
+        else:
+            figures_skipped.append("energy_conservation (no physics history)")
 
+        # dt scaling study
         if dt_scaling_results:
-            self.physics.plot_dt_scaling(
+            fig = self.physics.plot_dt_scaling(
                 dt_scaling_results,
                 save_name=f"{self.experiment_name}_dt_scaling"
             )
+            if fig is not None:
+                figures_generated.append("dt_scaling")
+                plt.close(fig)
 
-        # Main figure
-        self.figures.generate_main_figure(
+        # Main figure (always generated, may have empty panels)
+        fig = self.figures.generate_main_figure(
             self.physics, self.training, self.ablation,
             save_name=f"{self.experiment_name}_main"
         )
+        if fig is not None:
+            figures_generated.append("main_figure")
+            plt.close(fig)
 
-        # Physics figure
-        self.figures.generate_physics_figure(
+        # Physics figure (always generated, may have empty panels)
+        fig = self.figures.generate_physics_figure(
             self.physics, dt_scaling_results,
             save_name=f"{self.experiment_name}_physics"
         )
+        if fig is not None:
+            figures_generated.append("physics_figure")
+            plt.close(fig)
 
-        print(f"📈 All figures saved to {self.experiment_dir}/figures/")
+        # Summary output
+        if figures_generated:
+            print(f"📈 Figures generated ({len(figures_generated)}): {', '.join(figures_generated)}")
+            print(f"   Saved to: {self.experiment_dir}/figures/")
+        else:
+            print("⚠️ No figures were generated (no data recorded)")
+
+        if figures_skipped:
+            print(f"⚠️ Figures skipped ({len(figures_skipped)}): {', '.join(figures_skipped)}")
 
     def generate_interpretability_outputs(
         self,
@@ -1515,6 +1571,205 @@ class PublicationMetrics:
         fig.savefig(self.interpretability.save_dir / f"{save_name}.png", dpi=150, bbox_inches='tight')
         fig.savefig(self.interpretability.save_dir / f"{save_name}.pdf", bbox_inches='tight')
         plt.close(fig)
+
+    # =========================================================================
+    # Trajectory Tracking Methods
+    # =========================================================================
+
+    def enable_trajectory_tracking(
+        self,
+        record_leapfrog: bool = True,
+        record_attention: bool = False,
+        max_batch_elements: int = 4,
+    ) -> Optional['TrajectoryRecorder']:
+        """
+        Enable trajectory tracking for detailed Hamiltonian dynamics recording.
+
+        When enabled, the HamiltonianFFN will record detailed trajectory data
+        including leapfrog integration steps, energy values (H, T, V), and
+        belief evolution.
+
+        Args:
+            record_leapfrog: Record individual leapfrog integration steps
+            record_attention: Record attention matrices (beta, KL)
+            max_batch_elements: Max batch elements to record (memory control)
+
+        Returns:
+            TrajectoryRecorder instance, or None if trajectory tracking unavailable
+
+        Example:
+            >>> recorder = pub_metrics.enable_trajectory_tracking(record_leapfrog=True)
+            >>> # Run model forward passes
+            >>> trajectories = recorder.history
+            >>> pub_metrics.plot_hamiltonian_trajectories()
+        """
+        if not TRAJECTORY_TRACKING_AVAILABLE:
+            warnings.warn(
+                "Trajectory tracking not available. "
+                "Ensure transformer.trajectory_tracking module is importable."
+            )
+            return None
+
+        self._trajectory_recorder = enable_trajectory_tracking(
+            record_leapfrog=record_leapfrog,
+            record_attention=record_attention,
+            max_batch_elements=max_batch_elements,
+        )
+        print(f"📍 Trajectory tracking enabled (leapfrog={record_leapfrog}, attention={record_attention})")
+        return self._trajectory_recorder
+
+    def disable_trajectory_tracking(self) -> None:
+        """Disable trajectory tracking."""
+        if TRAJECTORY_TRACKING_AVAILABLE:
+            disable_trajectory_tracking()
+        self._trajectory_recorder = None
+        print("📍 Trajectory tracking disabled")
+
+    def get_trajectory_recorder(self) -> Optional['TrajectoryRecorder']:
+        """Get the current trajectory recorder."""
+        if TRAJECTORY_TRACKING_AVAILABLE:
+            return get_global_recorder()
+        return getattr(self, '_trajectory_recorder', None)
+
+    def plot_hamiltonian_trajectories(
+        self,
+        save_name: str = "hamiltonian_trajectories",
+        max_trajectories: int = 5,
+    ) -> Optional[plt.Figure]:
+        """
+        Plot Hamiltonian trajectories from recorded data.
+
+        Generates a multi-panel figure showing:
+        - Energy conservation (H, T, V over leapfrog steps)
+        - Belief evolution (μ norm over layers)
+        - Per-layer energy breakdown
+
+        Args:
+            save_name: Name for saved figure files
+            max_trajectories: Maximum number of trajectories to plot
+
+        Returns:
+            matplotlib Figure, or None if no trajectory data
+        """
+        recorder = self.get_trajectory_recorder()
+        if recorder is None or not recorder.history:
+            warnings.warn(
+                "plot_hamiltonian_trajectories: No trajectory data available. "
+                "Enable trajectory tracking before model forward passes."
+            )
+            return None
+
+        # Import plotting utilities
+        try:
+            from transformer.trajectory_plots import (
+                plot_energy_conservation as plot_energy_traj,
+                plot_per_layer_energy,
+                plot_mu_evolution,
+            )
+        except ImportError:
+            warnings.warn("trajectory_plots module not available for detailed trajectory plots")
+            return None
+
+        trajectories = recorder.history[-max_trajectories:]
+
+        # Create multi-panel figure
+        n_traj = len(trajectories)
+        fig = plt.figure(figsize=(14, 4 * n_traj))
+        gs = GridSpec(n_traj, 3, figure=fig, hspace=0.4, wspace=0.3)
+
+        for i, traj in enumerate(trajectories):
+            # Energy conservation
+            ax1 = fig.add_subplot(gs[i, 0])
+            self._plot_trajectory_energy(ax1, traj, f"Trajectory {i+1}: Energy")
+
+            # Mu evolution
+            ax2 = fig.add_subplot(gs[i, 1])
+            self._plot_trajectory_mu(ax2, traj, f"Trajectory {i+1}: μ Evolution")
+
+            # Per-layer delta_H
+            ax3 = fig.add_subplot(gs[i, 2])
+            self._plot_trajectory_delta_h(ax3, traj, f"Trajectory {i+1}: ΔH per Layer")
+
+        plt.suptitle('Hamiltonian Trajectory Analysis', fontsize=14, y=1.02)
+
+        save_path = self.experiment_dir / "figures" / f"{save_name}.png"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
+
+        print(f"📈 Trajectory figure saved to {save_path}")
+        return fig
+
+    def _plot_trajectory_energy(self, ax: plt.Axes, trajectory, title: str):
+        """Plot energy trace for a single trajectory."""
+        H_all, T_all, V_all = [], [], []
+        for lt in trajectory.layer_trajectories:
+            for snap in lt.leapfrog_steps:
+                H_all.append(snap.H)
+                T_all.append(snap.T)
+                V_all.append(snap.V)
+
+        if not H_all:
+            ax.text(0.5, 0.5, 'No leapfrog data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title)
+            return
+
+        steps = range(len(H_all))
+        ax.plot(steps, H_all, 'b-', label='H (total)', linewidth=2)
+        ax.plot(steps, T_all, 'r--', label='T (kinetic)', alpha=0.7)
+        ax.plot(steps, V_all, 'g--', label='V (potential)', alpha=0.7)
+        ax.set_xlabel('Leapfrog Step')
+        ax.set_ylabel('Energy')
+        ax.set_title(title)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    def _plot_trajectory_mu(self, ax: plt.Axes, trajectory, title: str):
+        """Plot μ evolution for a single trajectory."""
+        mu_norms = []
+        layer_labels = []
+        for lt in trajectory.layer_trajectories:
+            if lt.mu_input is not None:
+                mu_norms.append(np.linalg.norm(lt.mu_input))
+                layer_labels.append(f"L{lt.layer_idx} in")
+            if lt.mu_output is not None:
+                mu_norms.append(np.linalg.norm(lt.mu_output))
+                layer_labels.append(f"L{lt.layer_idx} out")
+
+        if not mu_norms:
+            ax.text(0.5, 0.5, 'No μ data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title)
+            return
+
+        ax.bar(range(len(mu_norms)), mu_norms, color='purple', alpha=0.7)
+        ax.set_xticks(range(len(mu_norms)))
+        ax.set_xticklabels(layer_labels, rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel('||μ||')
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3, axis='y')
+
+    def _plot_trajectory_delta_h(self, ax: plt.Axes, trajectory, title: str):
+        """Plot per-layer delta_H for a single trajectory."""
+        delta_H = []
+        layers = []
+        for lt in trajectory.layer_trajectories:
+            if lt.diagnostics and 'delta_H' in lt.diagnostics:
+                delta_H.append(lt.diagnostics['delta_H'])
+                layers.append(f"L{lt.layer_idx}")
+
+        if not delta_H:
+            ax.text(0.5, 0.5, 'No ΔH data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title)
+            return
+
+        colors = ['green' if dh < 0.01 else 'orange' if dh < 0.1 else 'red' for dh in delta_H]
+        ax.bar(layers, delta_H, color=colors, alpha=0.7, edgecolor='black')
+        ax.set_ylabel('|ΔH|')
+        ax.set_title(title)
+        ax.axhline(y=0.01, color='green', linestyle='--', alpha=0.5, label='Good (0.01)')
+        ax.axhline(y=0.1, color='orange', linestyle='--', alpha=0.5, label='Fair (0.1)')
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, alpha=0.3, axis='y')
 
     def print_summary(self):
         """Print summary of all metrics."""
