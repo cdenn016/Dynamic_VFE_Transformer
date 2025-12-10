@@ -169,10 +169,102 @@ def save_experiment_config(
 DEFAULT_FFN_MODE = 'hamiltonian'  # 'learned', 'variational_gradient_engine', 'hamiltonian', or None
 DEFAULT_RUN_ABLATION = False  # Set True to run all three modes
 DEFAULT_ENABLE_SIGMA_PHI = True   # Set True to enable learning Σ and φ (required for hamiltonian!)
+DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU settings
 # ============================================================================
 
 
 
+# =============================================================================
+# GPU-OPTIMIZED CONFIG (RTX 5090 / 32GB VRAM)
+# =============================================================================
+# Use this for maximum throughput on high-end GPUs
+GPU_OPTIMIZED_CONFIG = {
+    # Model architecture (scaled up for GPU)
+    'vocab_size': 256,        # Full byte-level vocab
+    'embed_dim': 63,          # K=63 (ODD - required for SO(3) irreps!) 3x larger
+    'n_layers': 6,            # Deeper for better learning
+    'hidden_dim': 252,        # 4×embed_dim
+    'max_seq_len': 128,       # N=128 (longer context)
+
+    # GPU Training optimizations
+    'batch_size': 64,         # Much larger batches for GPU utilization
+    'use_amp': True,          # Mixed precision (FP16) - 2x speedup
+    'num_workers': 4,         # Parallel data loading
+
+    # Gauge transformer parameters
+    'kappa_beta': 1,
+    'epsilon': 1e-8,
+    'pos_encoding_mode': 'learned',
+    'evolve_sigma': True,     # Full geometric learning
+    'evolve_phi': True,       # Full geometric learning
+    'tie_embeddings': True,
+
+    # Attention pattern
+    'attention_pattern': 'full',
+    'attention_window': 128,
+    'attention_global_tokens': 0,
+
+    # Variational FFN parameters
+    'ffn_mode': 'hamiltonian',
+    'ffn_alpha': 0.2,
+    'ffn_tau_eff': 1.0,
+    'ffn_kappa': 1.0,
+    'ffn_n_iterations': 1,
+    'ffn_learnable_lr': True,
+    'ffn_pattern': 'full',
+    'ffn_window': 128,
+
+    # Hamiltonian FFN parameters
+    'ffn_hamiltonian_dt': 0.01,
+    'ffn_hamiltonian_n_steps': 10,
+    'ffn_hamiltonian_momentum_scale': 0.5,
+    'ffn_hamiltonian_gamma': 0.0,
+    'ffn_hamiltonian_mass_use_prior': True,
+    'ffn_hamiltonian_mass_use_observation': False,
+    'ffn_hamiltonian_mass_use_incoming_social': False,
+    'ffn_hamiltonian_mass_use_outgoing_recoil': False,
+    'ffn_hamiltonian_evolve_mass': False,
+    'gauge_fixed_priors': False,
+
+    # Training (scaled for GPU)
+    'max_steps': 500,         # More steps for convergence
+
+    # Learning rates (same natural gradient rates)
+    'mu_lr': 0.25,
+    'sigma_lr': 0.05,
+    'phi_lr': 0.1,
+    'ffn_lr': 0.25,
+    'warmup_steps': 20,
+
+    # Free energy weights
+    'alpha': 0.2,
+    'beta': 1,
+    'lambda_gamma': 1,
+    'kappa_gamma': 1.0,
+
+    # Regularization
+    'weight_decay': 0.01,
+    'dropout': 0.1,
+    'grad_clip': 1.0,
+
+    # Logging (less frequent for speed)
+    'log_interval': 5,
+    'eval_interval': 25,
+    'checkpoint_interval': 100,
+    'patience': 5,
+
+    # Irrep structure (for K=63)
+    # 19×1 + 8×3 + 4×5 = 19 + 24 + 20 = 63 ✓
+    'irrep_spec': [
+        ('ℓ0', 19, 1),   # 19 dimensions (scalars)
+        ('ℓ1', 8, 3),    # 24 dimensions (vectors)
+        ('ℓ2', 4, 5),    # 20 dimensions (rank-2 tensors)
+    ],
+}
+
+# =============================================================================
+# ORIGINAL PUBLICATION CONFIG (CPU/low-end GPU)
+# =============================================================================
 PUBLICATION_CONFIG = {
     # Model architecture (minimal but meaningful)
     'vocab_size': 200,        # Byte-level vocab (up to 256). Set 100-256 for experiments.
@@ -395,38 +487,62 @@ class PublicationTrainer(FastTrainer):
             print(f"📈 Comprehensive metrics enabled: {self.pub_metrics.experiment_dir}")
 
     def train_step(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """Train step with comprehensive metrics."""
+        """Train step with comprehensive metrics and AMP support."""
         self.model.train()
 
         input_ids, target_ids = batch
         input_ids = input_ids.to(self.device)
         target_ids = target_ids.to(self.device)
 
-        # Forward pass with full metrics
-        loss, full_metrics = compute_free_energy_loss(
-            self.model,
-            input_ids,
-            target_ids,
-            alpha=self.config.alpha,
-            lambda_beta=self.config.beta,
-            lambda_gamma=self.config.lambda_gamma,
-            kappa_gamma=self.config.kappa_gamma,
-        )
-
-        # Backward
-        loss.backward()
+        # Forward pass with full metrics (with optional AMP)
+        if self.scaler is not None:
+            # Mixed precision forward pass
+            with torch.amp.autocast('cuda'):
+                loss, full_metrics = compute_free_energy_loss(
+                    self.model,
+                    input_ids,
+                    target_ids,
+                    alpha=self.config.alpha,
+                    lambda_beta=self.config.beta,
+                    lambda_gamma=self.config.lambda_gamma,
+                    kappa_gamma=self.config.kappa_gamma,
+                )
+            # Scaled backward
+            self.scaler.scale(loss).backward()
+        else:
+            # Standard forward pass
+            loss, full_metrics = compute_free_energy_loss(
+                self.model,
+                input_ids,
+                target_ids,
+                alpha=self.config.alpha,
+                lambda_beta=self.config.beta,
+                lambda_gamma=self.config.lambda_gamma,
+                kappa_gamma=self.config.kappa_gamma,
+            )
+            loss.backward()
 
         # Compute gradient norms BEFORE clipping
         grad_norms = self._compute_gradient_norms()
 
-        # Clip and step
-        if self.config.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.grad_clip,
-            )
+        # Clip and step (with scaler if AMP enabled)
+        if self.scaler is not None:
+            if self.config.grad_clip > 0:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.grad_clip,
+                )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            if self.config.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.grad_clip,
+                )
+            self.optimizer.step()
 
-        self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()
         self.optimizer.zero_grad()
@@ -669,7 +785,7 @@ def run_single_experiment(
         max_seq_len=config['max_seq_len'],
         batch_size=config['batch_size'],
         vocab_size=config['vocab_size'],  # Up to 256 bytes
-        num_workers=0,
+        num_workers=config.get('num_workers', 0),
     )
 
     config['vocab_size'] = actual_vocab_size
@@ -727,6 +843,9 @@ def run_single_experiment(
 
         use_wandb=use_wandb,
         checkpoint_dir=exp_checkpoint_dir,
+
+        # GPU optimizations
+        use_amp=config.get('use_amp', False),
     )
 
     print("\n" + "="*70)
@@ -735,6 +854,9 @@ def run_single_experiment(
     print(f"  Max steps:      {train_config.max_steps}")
     print(f"  Warmup:         {train_config.warmup_steps}")
     print(f"  Batch size:     {config['batch_size']}")
+    print(f"  Seq length:     {config['max_seq_len']}")
+    print(f"  Use AMP:        {train_config.use_amp}")
+    print(f"  Num workers:    {config.get('num_workers', 0)}")
     print(f"\nFree Energy Weights:")
     print(f"  α (self-consistency): {train_config.alpha}")
     print(f"  β (belief align):     {train_config.beta}")
@@ -982,6 +1104,12 @@ def main():
     parser.add_argument('--enable_sigma_phi', action='store_true', default=DEFAULT_ENABLE_SIGMA_PHI,
                         help='Enable learning covariances (Σ) and gauge frames (φ) - full geometric learning!')
 
+    # GPU optimization
+    parser.add_argument('--gpu_optimized', action='store_true', default=DEFAULT_USE_GPU_OPTIMIZED,
+                        help='Use GPU-optimized config (larger batch, AMP, bigger model) for RTX 5090 / high-end GPUs')
+    parser.add_argument('--no_gpu_optimized', action='store_true',
+                        help='Force use of original small config even on GPU')
+
     # System
     parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints_publication')
@@ -999,6 +1127,19 @@ def main():
     print("PUBLICATION PROOF-OF-PRINCIPLE TRAINING")
     print("="*70)
     print(f"\nDevice: {device}")
+
+    # Select config based on GPU optimization flag
+    use_gpu_config = args.gpu_optimized and not args.no_gpu_optimized and device.type == 'cuda'
+    if use_gpu_config:
+        print("\n" + "="*70)
+        print("🚀 GPU-OPTIMIZED MODE (RTX 5090 / High-end GPU)")
+        print("="*70)
+        print("   batch_size=64, use_amp=True, embed_dim=63, seq_len=128")
+        print("   This will fully utilize your GPU!")
+        print("="*70 + "\n")
+        base_config = GPU_OPTIMIZED_CONFIG.copy()
+    else:
+        base_config = PUBLICATION_CONFIG.copy()
 
     checkpoint_dir = Path(args.checkpoint_dir)
 
@@ -1020,7 +1161,7 @@ def main():
             print("Edit DEFAULT_FFN_MODE at top of train_publication.py or use command-line args")
             return
 
-        config = PUBLICATION_CONFIG.copy()
+        config = base_config.copy()
         config['ffn_mode'] = args.ffn_mode
 
         # Gradient engine requires additional parameters
