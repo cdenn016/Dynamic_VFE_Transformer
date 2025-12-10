@@ -56,6 +56,8 @@ class GaugeTokenEmbedding(nn.Module):
         init_sigma_scale: float = 0.1,
         learnable_sigma: bool = False,
         learnable_phi: bool = False,
+        gauge_fixed_priors: bool = False,
+        generators: Optional[torch.Tensor] = None,
     ):
         """
         Initialize gauge token embedding.
@@ -68,6 +70,11 @@ class GaugeTokenEmbedding(nn.Module):
             init_sigma_scale: Initial scale for covariance (σ in σ²I)
             learnable_sigma: If True, Σ evolves during training
             learnable_phi: If True, φ evolves during training
+            gauge_fixed_priors: If True, priors are defined as SO(3) rotations of a
+                               single base prior: p_i = R_i ▷ p_0. This guarantees
+                               gauge covariance: p_i = Ω_ij[p_j] where Ω_ij = R_i R_j^{-1}.
+                               Requires generators for computing rotations.
+            generators: SO(3) generators (3, K, K), required if gauge_fixed_priors=True
         """
         super().__init__()
         self.vocab_size = vocab_size
@@ -75,23 +82,39 @@ class GaugeTokenEmbedding(nn.Module):
         self.irrep_spec = irrep_spec
         self.learnable_sigma = learnable_sigma
         self.learnable_phi = learnable_phi
+        self.gauge_fixed_priors = gauge_fixed_priors
+
+        if gauge_fixed_priors and generators is None:
+            raise ValueError("gauge_fixed_priors=True requires generators to be provided")
+
+        if generators is not None:
+            self.register_buffer('generators', generators)
 
         # =================================================================
-        # Mean Embeddings μ_i
+        # Mean Embeddings μ_i (or base prior μ_0 if gauge_fixed_priors)
         # =================================================================
-        # Standard learnable embedding: vocab_size × embed_dim
-        self.mu_embed = nn.Embedding(vocab_size, embed_dim)
-        nn.init.normal_(self.mu_embed.weight, mean=0.0, std=init_std)
+        if gauge_fixed_priors:
+            # Single base prior mean μ_0 - all token priors are rotations of this
+            self.base_mu = nn.Parameter(torch.randn(embed_dim) * init_std)
+        else:
+            # Standard learnable embedding: vocab_size × embed_dim
+            self.mu_embed = nn.Embedding(vocab_size, embed_dim)
+            nn.init.normal_(self.mu_embed.weight, mean=0.0, std=init_std)
 
         # =================================================================
-        # Covariance Embeddings Σ_i
+        # Covariance Embeddings Σ_i (or base prior Σ_0 if gauge_fixed_priors)
         # =================================================================
         # Parameterize via log-diagonal (ensures positivity):
         #   Σ = diag(exp(log_σ_diag))
         #
         # This is a simplified SPD parametrization. Future: full Cholesky.
 
-        if learnable_sigma:
+        if gauge_fixed_priors:
+            # Single base prior covariance Σ_0 - all token priors are rotations of this
+            self.base_log_sigma_diag = nn.Parameter(
+                torch.full((embed_dim,), np.log(init_sigma_scale))
+            )
+        elif learnable_sigma:
             # Per-token covariance
             self.log_sigma_diag = nn.Parameter(
                 torch.full((vocab_size, embed_dim), np.log(init_sigma_scale))
@@ -107,9 +130,11 @@ class GaugeTokenEmbedding(nn.Module):
         # Gauge Frame Embeddings φ_i ∈ so(3)
         # =================================================================
         # Initialize at zero (identity frame exp(0) = I)
+        # When gauge_fixed_priors=True, these define both the gauge frame
+        # AND the rotation R_i for computing p_i = R_i ▷ p_0
 
-        if learnable_phi:
-            # Per-token gauge frame
+        if learnable_phi or gauge_fixed_priors:
+            # Per-token gauge frame (required for gauge_fixed_priors)
             self.phi_embed = nn.Embedding(vocab_size, 3)  # so(3) is 3D
             nn.init.zeros_(self.phi_embed.weight)
         else:
@@ -133,44 +158,62 @@ class GaugeTokenEmbedding(nn.Module):
 
         NOTE: seq_len = number of agents at the single point c*
               This is NOT a spatial dimension!
+
+        When gauge_fixed_priors=True:
+            Priors are computed as p_i = R_i ▷ p_0 where R_i = exp(φ_i · generators).
+            This guarantees p_i = Ω_ij[p_j] for all i,j, restoring gauge covariance.
         """
         batch_size, num_agents = token_ids.shape
 
         # =================================================================
-        # Mean Embeddings
+        # Gauge Frame Embeddings (computed first for gauge_fixed_priors)
         # =================================================================
-        # μ(token_i) for each agent i at c*
-        mu = self.mu_embed(token_ids)  # (B, N, K) where N = num_agents
-
-        # =================================================================
-        # Covariance Embeddings
-        # =================================================================
-        # Build diagonal covariances: Σ = diag(exp(log_σ))
-
-        if self.learnable_sigma:
-            # Per-token covariance
-            log_sigma = self.log_sigma_diag[token_ids]  # (B, N, K)
-            sigma_diag = torch.exp(log_sigma)  # (B, N, K)
-        else:
-            # Shared covariance
-            sigma_diag = torch.exp(self.log_sigma_diag)  # (K,)
-            sigma_diag = sigma_diag.unsqueeze(0).unsqueeze(0)  # (1, 1, K)
-            sigma_diag = sigma_diag.expand(batch_size, num_agents, -1)  # (B, N, K)
-
-        # Convert to full covariance matrices (diagonal)
-        # sigma[b, n] = diag(sigma_diag[b, n])
-        sigma = torch.diag_embed(sigma_diag)  # (B, N, K, K)
-
-        # =================================================================
-        # Gauge Frame Embeddings
-        # =================================================================
-        if self.learnable_phi:
+        if self.learnable_phi or self.gauge_fixed_priors:
             # Per-token gauge frame
             phi = self.phi_embed(token_ids)  # (B, N, 3)
         else:
             # All agents at identity frame
             phi = self.phi_base.unsqueeze(0).unsqueeze(0)  # (1, 1, 3)
             phi = phi.expand(batch_size, num_agents, -1)  # (B, N, 3)
+
+        # =================================================================
+        # Mean and Covariance Embeddings
+        # =================================================================
+        if self.gauge_fixed_priors:
+            # Compute rotation matrices R_i = exp(φ_i · generators)
+            # phi: (B, N, 3), generators: (3, K, K)
+            phi_matrix = torch.einsum('bnc,ckl->bnkl', phi, self.generators)  # (B, N, K, K)
+            R = torch.linalg.matrix_exp(phi_matrix)  # (B, N, K, K)
+
+            # Rotate base prior mean: μ_i = R_i @ μ_0
+            # base_mu: (K,), R: (B, N, K, K)
+            mu = torch.einsum('bnkl,l->bnk', R, self.base_mu)  # (B, N, K)
+
+            # Build base covariance Σ_0 = diag(exp(log_σ_0))
+            sigma_diag_base = torch.exp(self.base_log_sigma_diag)  # (K,)
+            Sigma_0 = torch.diag(sigma_diag_base)  # (K, K)
+
+            # Rotate base prior covariance: Σ_i = R_i @ Σ_0 @ R_i^T
+            # R: (B, N, K, K), Sigma_0: (K, K)
+            sigma = torch.einsum('bnij,jk,bnlk->bnil', R, Sigma_0, R)  # (B, N, K, K)
+        else:
+            # Standard per-token embeddings
+            # μ(token_i) for each agent i at c*
+            mu = self.mu_embed(token_ids)  # (B, N, K) where N = num_agents
+
+            # Build diagonal covariances: Σ = diag(exp(log_σ))
+            if self.learnable_sigma:
+                # Per-token covariance
+                log_sigma = self.log_sigma_diag[token_ids]  # (B, N, K)
+                sigma_diag = torch.exp(log_sigma)  # (B, N, K)
+            else:
+                # Shared covariance
+                sigma_diag = torch.exp(self.log_sigma_diag)  # (K,)
+                sigma_diag = sigma_diag.unsqueeze(0).unsqueeze(0)  # (1, 1, K)
+                sigma_diag = sigma_diag.expand(batch_size, num_agents, -1)  # (B, N, K)
+
+            # Convert to full covariance matrices (diagonal)
+            sigma = torch.diag_embed(sigma_diag)  # (B, N, K, K)
 
         return mu, sigma, phi
 
@@ -180,7 +223,8 @@ class GaugeTokenEmbedding(nn.Module):
             f"vocab_size={self.vocab_size}, "
             f"embed_dim={self.embed_dim}, "
             f"learnable_sigma={self.learnable_sigma}, "
-            f"learnable_phi={self.learnable_phi}"
+            f"learnable_phi={self.learnable_phi}, "
+            f"gauge_fixed_priors={self.gauge_fixed_priors}"
         )
 
 

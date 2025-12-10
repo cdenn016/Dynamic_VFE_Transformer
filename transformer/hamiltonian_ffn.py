@@ -1044,6 +1044,11 @@ class LeapfrogIntegrator(nn.Module):
         μ̇ = M⁻¹ π_μ          (Extended mass from Inertia of Belief paper)
         Σ̇ = 2 Σ π_Σ Σ        (SPD manifold)
         φ̇ = π_φ              (Lie algebra)
+
+    Mass Evolution:
+        When evolve_mass=True, M is recomputed at each integration step since
+        M depends on Σ (through Λ_q = Σ⁻¹). This is theoretically correct but
+        more expensive. For small dt, fixed M is a reasonable approximation.
     """
 
     def __init__(
@@ -1054,6 +1059,8 @@ class LeapfrogIntegrator(nn.Module):
         n_steps: int = 1,
         update_Sigma: bool = True,
         update_phi: bool = False,
+        evolve_mass: bool = False,
+        mass_computer: Optional['InertiaOfBeliefMass'] = None,
     ):
         super().__init__()
         self.kinetic = kinetic
@@ -1062,6 +1069,11 @@ class LeapfrogIntegrator(nn.Module):
         self.n_steps = n_steps
         self.update_Sigma = update_Sigma
         self.update_phi = update_phi
+        self.evolve_mass = evolve_mass
+        self.mass_computer = mass_computer
+
+        if evolve_mass and mass_computer is None:
+            raise ValueError("evolve_mass=True requires mass_computer to be provided")
 
     def position_step(
         self,
@@ -1247,6 +1259,9 @@ class LeapfrogIntegrator(nn.Module):
         targets: Optional[torch.Tensor] = None,
         W_out: Optional[torch.Tensor] = None,
         trajectory_callback: Optional[callable] = None,
+        # Additional params for evolving mass (only used if evolve_mass=True)
+        Sigma_obs: Optional[torch.Tensor] = None,
+        obs_temperature: float = 1.0,
     ) -> PhaseSpaceState:
         """
         Multiple leapfrog steps.
@@ -1256,18 +1271,37 @@ class LeapfrogIntegrator(nn.Module):
             mu_prior: Prior means
             Sigma_prior: Prior covariances
             M_inv: Inverse mass matrix from Inertia of Belief paper
+                   (used as initial M_inv; recomputed each step if evolve_mass=True)
             beta: Attention weights
             targets: Target tokens
             W_out: Output projection
             trajectory_callback: Optional callback(step, state, H, T, V) for recording
+            Sigma_obs: Observation covariance (for Gaussian obs model, used if evolve_mass=True)
+            obs_temperature: Softmax temperature (for categorical obs model)
         """
+        current_M_inv = M_inv
+
         for step_idx in range(self.n_steps):
-            state = self.step(state, mu_prior, Sigma_prior, M_inv, beta, targets, W_out)
+            # Recompute mass matrix if evolve_mass is enabled
+            # M depends on Σ_q through the social precision terms Λ_q = Σ_q⁻¹
+            if self.evolve_mass and self.mass_computer is not None:
+                _, current_M_inv = self.mass_computer.compute_mass(
+                    Sigma_prior=Sigma_prior,
+                    Sigma_q=state.Sigma,  # Current evolved Σ
+                    phi=state.phi,         # Current evolved φ
+                    beta=beta,
+                    Sigma_obs=Sigma_obs,
+                    mu=state.mu,           # Current evolved μ (for categorical Λ_o)
+                    W_out=W_out,
+                    obs_temperature=obs_temperature,
+                )
+
+            state = self.step(state, mu_prior, Sigma_prior, current_M_inv, beta, targets, W_out)
 
             # Record trajectory if callback provided
             if trajectory_callback is not None:
                 # Compute energy for diagnostic
-                T = self.kinetic.total_kinetic(state, M_inv)
+                T = self.kinetic.total_kinetic(state, current_M_inv)
                 V, _ = self.potential(state, mu_prior, Sigma_prior, beta, targets, W_out)
                 H = T + V
                 trajectory_callback(
@@ -1339,6 +1373,8 @@ class HamiltonianFFN(nn.Module):
         # Thermostat (optional damping)
         gamma: float = 0.0,          # Damping coefficient (0 = pure Hamiltonian)
         temperature: float = 1.0,     # For Langevin dynamics
+        # Mass evolution (full theory vs approximation)
+        evolve_mass: bool = False,   # If True, recompute M at each leapfrog step
         eps: float = 1e-8,
     ):
         """
@@ -1359,6 +1395,11 @@ class HamiltonianFFN(nn.Module):
                         If None, defaults to prior precision only (original behavior)
             gamma: Damping coefficient (>0 adds friction)
             temperature: Thermal energy scale
+            evolve_mass: If True, recompute mass matrix M at each leapfrog step.
+                        The mass depends on Σ (via Λ_q = Σ⁻¹), so if Σ evolves,
+                        M should too for full theoretical correctness.
+                        If False (default), M is computed once and held fixed,
+                        which is a good approximation for small dt.
             eps: Numerical stability
         """
         super().__init__()
@@ -1371,6 +1412,7 @@ class HamiltonianFFN(nn.Module):
         self.mass_config = mass_config or MassConfig()  # Default: prior precision only
         self.gamma = gamma
         self.temperature = temperature
+        self.evolve_mass = evolve_mass
         self.eps = eps
 
         # Register generators as buffer
@@ -1397,6 +1439,8 @@ class HamiltonianFFN(nn.Module):
             n_steps=n_leapfrog_steps,
             update_Sigma=update_Sigma,
             update_phi=update_phi,
+            evolve_mass=evolve_mass,
+            mass_computer=self.mass_computer if evolve_mass else None,
         )
 
         # Learnable dt (optional)
@@ -1586,15 +1630,31 @@ class HamiltonianFFN(nn.Module):
                 pass  # Trajectory tracking not available
 
             # Symplectic integration (using M_inv for position updates)
+            # If evolve_mass=True, M is recomputed at each step inside integrate()
             state = self.integrator.integrate(
                 state, mu_prior_dyn, Sigma_prior_dyn, M_inv, beta_dyn, targets, W_out,
                 trajectory_callback=trajectory_callback,
+                # Additional params for evolving mass (only used if evolve_mass=True)
+                Sigma_obs=Sigma_obs_dyn,
+                obs_temperature=1.0,  # Could be made configurable
             )
 
             # Compute final Hamiltonian
-            # Note: For position-dependent mass, we should recompute M at final position
-            # For simplicity and symplecticity, we use the initial M
-            T_final = self.kinetic.total_kinetic(state, M_inv)
+            # If evolve_mass=True, recompute M at final position for accurate energy
+            if self.evolve_mass:
+                _, M_inv_final = self.mass_computer.compute_mass(
+                    Sigma_prior=Sigma_prior_dyn,
+                    Sigma_q=state.Sigma,
+                    phi=state.phi,
+                    beta=beta_dyn,
+                    Sigma_obs=Sigma_obs_dyn,
+                    mu=state.mu,
+                    W_out=W_out_dyn,
+                )
+            else:
+                M_inv_final = M_inv
+
+            T_final = self.kinetic.total_kinetic(state, M_inv_final)
             V_final, _ = self.potential(state, mu_prior_dyn, Sigma_prior_dyn, beta_dyn, targets, W_out)
             H_final = T_final + V_final
 
@@ -1607,6 +1667,7 @@ class HamiltonianFFN(nn.Module):
                 'mass_use_observation': self.mass_config.use_observation_precision,
                 'mass_use_incoming_social': self.mass_config.use_incoming_social,
                 'mass_use_outgoing_recoil': self.mass_config.use_outgoing_recoil,
+                'mass_evolve': self.evolve_mass,
             }
 
             diagnostics = {
@@ -1642,6 +1703,7 @@ class HamiltonianFFN(nn.Module):
             f"dt={self.dt:.4f}, "
             f"gamma={self.gamma:.4f}, "
             f"mass=[{mass_str}], "
+            f"evolve_mass={self.evolve_mass}, "
             f"update_Sigma={self.update_Sigma}, "
             f"update_phi={self.update_phi}"
         )

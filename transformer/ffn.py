@@ -76,6 +76,7 @@ class GaugeFFN(nn.Module):
         hamiltonian_mass_use_observation: bool = False,  # Λ_o term
         hamiltonian_mass_use_incoming_social: bool = False,  # Σβ_{ik}Λ̃_{qk} term
         hamiltonian_mass_use_outgoing_recoil: bool = False,  # Σβ_{ji}Λ_{qi} term
+        hamiltonian_evolve_mass: bool = False,  # Recompute M at each leapfrog step?
     ):
         """
         Initialize unified FFN.
@@ -109,6 +110,9 @@ class GaugeFFN(nn.Module):
             hamiltonian_mass_use_observation: Include observation precision Λ_o in mass
             hamiltonian_mass_use_incoming_social: Include incoming social precision in mass
             hamiltonian_mass_use_outgoing_recoil: Include outgoing recoil precision in mass
+            hamiltonian_evolve_mass: If True, recompute mass M at each leapfrog step.
+                                    Theoretically correct since M depends on Σ, but slower.
+                                    If False (default), M computed once and held fixed.
         """
         super().__init__()
 
@@ -205,6 +209,7 @@ class GaugeFFN(nn.Module):
                 momentum_scale=hamiltonian_momentum_scale,
                 mass_config=mass_config,  # Extended mass from paper
                 gamma=hamiltonian_gamma,
+                evolve_mass=hamiltonian_evolve_mass,  # Recompute M at each step?
             )
 
     def forward(

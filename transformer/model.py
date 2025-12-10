@@ -116,6 +116,10 @@ class GaugeTransformerLM(nn.Module):
         ffn_hamiltonian_mass_use_observation = config.get('ffn_hamiltonian_mass_use_observation', False)
         ffn_hamiltonian_mass_use_incoming_social = config.get('ffn_hamiltonian_mass_use_incoming_social', False)
         ffn_hamiltonian_mass_use_outgoing_recoil = config.get('ffn_hamiltonian_mass_use_outgoing_recoil', False)
+        ffn_hamiltonian_evolve_mass = config.get('ffn_hamiltonian_evolve_mass', False)
+
+        # Gauge-fixed priors (for gauge covariance)
+        gauge_fixed_priors = config.get('gauge_fixed_priors', False)
 
         # Sparse attention/FFN config
         self.attention_pattern = config.get('attention_pattern', 'full')
@@ -148,7 +152,9 @@ class GaugeTransformerLM(nn.Module):
             init_std=0.02,
             init_sigma_scale=0.1,
             learnable_sigma=False,  # Keep simple for now
-            learnable_phi=False,
+            learnable_phi=gauge_fixed_priors,  # Enable phi learning if gauge_fixed_priors
+            gauge_fixed_priors=gauge_fixed_priors,
+            generators=self.generators if gauge_fixed_priors else None,
         )
 
         self.pos_encoding = GaugePositionalEncoding(
@@ -192,6 +198,7 @@ class GaugeTransformerLM(nn.Module):
             ffn_hamiltonian_mass_use_observation=ffn_hamiltonian_mass_use_observation,
             ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
             ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
+            ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
         )
 
         # =================================================================
