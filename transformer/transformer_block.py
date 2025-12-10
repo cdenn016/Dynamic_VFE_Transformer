@@ -29,6 +29,15 @@ from transformer.attention import IrrepMultiHeadAttention
 # Import unified FFN (supports learned + variational + hamiltonian modes)
 from transformer.ffn import GaugeFFN
 
+# Trajectory tracking (optional)
+try:
+    from transformer.trajectory_tracking import get_global_recorder
+    TRAJECTORY_TRACKING_AVAILABLE = True
+except ImportError:
+    TRAJECTORY_TRACKING_AVAILABLE = False
+    def get_global_recorder():
+        return None
+
 
 class GaugeTransformerBlock(nn.Module):
     """
@@ -242,18 +251,25 @@ class GaugeTransformerBlock(nn.Module):
         mu_normalized = self.norm1(mu_q)
 
         # Multi-head attention (gauge-theoretic!)
-        # Capture beta if needed for variational/hamiltonian FFN
+        # Capture beta if needed for variational/hamiltonian FFN or trajectory recording
+        recorder = get_global_recorder() if TRAJECTORY_TRACKING_AVAILABLE else None
+        recording_attention = recorder is not None and recorder.enabled and recorder.record_attention
         need_beta = self.ffn_mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'hamiltonian']
+        need_attention_output = need_beta or recording_attention
 
-        mu_attn, sigma_attn, beta, _ = self.attention(
+        mu_attn, sigma_attn, beta, kl_matrix = self.attention(
             mu_normalized,
             sigma_q,
             phi,
             generators,
             mask=mask,
-            return_attention=need_beta,  # Only compute if needed
+            return_attention=need_attention_output,  # Compute if needed for FFN or recording
             cached_head_transports=cached_head_transports,  # Cross-layer cache
         )
+
+        # Record attention for trajectory tracking
+        if recording_attention and beta is not None:
+            recorder.record_attention(beta, kl_matrix)
 
         # Residual connection + dropout on means
         mu_q = mu_q + self.dropout1(mu_attn)
@@ -533,11 +549,27 @@ class GaugeTransformerStack(nn.Module):
         """
         intermediates = [] if return_intermediates else None
 
+        # Get trajectory recorder
+        recorder = get_global_recorder() if TRAJECTORY_TRACKING_AVAILABLE else None
+        recording_enabled = recorder is not None and recorder.enabled
+
         for layer_idx, block in enumerate(self.blocks):
+            # Trajectory recording: start layer
+            if recording_enabled:
+                recorder.start_layer(layer_idx)
+                recorder.record_layer_input(mu_q, sigma_q, phi)
+
             mu_q, sigma_q, phi = block(
                 mu_q, sigma_q, phi, generators, mask, mu_prior,
                 cached_head_transports=cached_head_transports,
             )
+
+            # Trajectory recording: record output and diagnostics
+            if recording_enabled:
+                # Get Hamiltonian diagnostics if available
+                diagnostics = block.get_hamiltonian_diagnostics()
+                recorder.record_layer_output(mu_q, sigma_q, phi, diagnostics)
+                recorder.end_layer()
 
             if return_intermediates:
                 intermediates.append({
