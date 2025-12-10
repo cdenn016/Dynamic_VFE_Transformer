@@ -1421,6 +1421,8 @@ class HamiltonianFFN(nn.Module):
         # Mass evolution (full theory vs approximation)
         evolve_mass: bool = False,   # If True, recompute M at each leapfrog step
         eps: float = 1e-8,
+        # Diagonal covariance mode (memory optimization)
+        diagonal_covariance: bool = False,  # If True, Σ is (B,N,K) not (B,N,K,K)
     ):
         """
         Initialize Hamiltonian FFN.
@@ -1451,7 +1453,6 @@ class HamiltonianFFN(nn.Module):
         self.embed_dim = embed_dim
         self.n_leapfrog_steps = n_leapfrog_steps
         self.dt = dt
-        self.update_Sigma = update_Sigma
         self.update_phi = update_phi
         self.momentum_scale = momentum_scale
         self.mass_config = mass_config or MassConfig()  # Default: prior precision only
@@ -1459,6 +1460,14 @@ class HamiltonianFFN(nn.Module):
         self.temperature = temperature
         self.evolve_mass = evolve_mass
         self.eps = eps
+        self.diagonal_covariance = diagonal_covariance
+
+        # In diagonal mode, disable Σ evolution (SPD dynamics not applicable)
+        if diagonal_covariance:
+            self.update_Sigma = False
+            # Note: Diagonal mode keeps σ fixed, only μ evolves via Hamiltonian
+        else:
+            self.update_Sigma = update_Sigma
 
         # Register generators as buffer
         self.register_buffer('generators', generators)
@@ -1609,6 +1618,14 @@ class HamiltonianFFN(nn.Module):
         Sigma_obs_dyn = Sigma_obs.detach() if Sigma_obs is not None else None
         W_out_dyn = W_out.detach() if W_out is not None else None
 
+        # Handle diagonal covariance mode: convert (B, N, K) -> (B, N, K, K)
+        # The main memory savings come from attention (O(N²×K²) -> O(N²×K)),
+        # but FFN operates per-token so full matrices are fine here.
+        if self.diagonal_covariance:
+            # Convert diagonal variances to full diagonal matrices
+            Sigma_dyn = torch.diag_embed(Sigma_dyn)  # (B, N, K) -> (B, N, K, K)
+            Sigma_prior_dyn = torch.diag_embed(Sigma_prior_dyn)  # (B, N, K) -> (B, N, K, K)
+
         # Use enable_grad() to ensure autograd.grad() works even when called
         # from validation (which uses torch.no_grad() context)
         with torch.enable_grad():
@@ -1736,7 +1753,16 @@ class HamiltonianFFN(nn.Module):
             }
 
         # Detach outputs - gradients flow through loss, not through dynamics
-        return state.mu.detach(), state.Sigma.detach(), state.phi.detach(), diagnostics
+        mu_out = state.mu.detach()
+        Sigma_out = state.Sigma.detach()
+        phi_out = state.phi.detach()
+
+        # Convert back to diagonal if in diagonal mode
+        if self.diagonal_covariance:
+            # Extract diagonal variances from full matrix: (B, N, K, K) -> (B, N, K)
+            Sigma_out = torch.diagonal(Sigma_out, dim1=-2, dim2=-1)
+
+        return mu_out, Sigma_out, phi_out, diagnostics
 
     def extra_repr(self) -> str:
         mass_terms = []
@@ -1758,7 +1784,8 @@ class HamiltonianFFN(nn.Module):
             f"mass=[{mass_str}], "
             f"evolve_mass={self.evolve_mass}, "
             f"update_Sigma={self.update_Sigma}, "
-            f"update_phi={self.update_phi}"
+            f"update_phi={self.update_phi}, "
+            f"diagonal_covariance={self.diagonal_covariance}"
         )
 
 

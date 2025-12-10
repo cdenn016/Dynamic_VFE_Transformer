@@ -121,6 +121,10 @@ class GaugeTransformerLM(nn.Module):
         # Gauge-fixed priors (for gauge covariance)
         gauge_fixed_priors = config.get('gauge_fixed_priors', False)
 
+        # Diagonal covariance mode (memory optimization)
+        diagonal_covariance = config.get('diagonal_covariance', False)
+        self.diagonal_covariance = diagonal_covariance
+
         # Sparse attention/FFN config
         self.attention_pattern = config.get('attention_pattern', 'full')
         self.attention_window = config.get('attention_window', 64)
@@ -155,6 +159,7 @@ class GaugeTransformerLM(nn.Module):
             learnable_phi=gauge_fixed_priors,  # Enable phi learning if gauge_fixed_priors
             gauge_fixed_priors=gauge_fixed_priors,
             generators=self.generators if gauge_fixed_priors else None,
+            diagonal_covariance=diagonal_covariance,
         )
 
         self.pos_encoding = GaugePositionalEncoding(
@@ -199,6 +204,7 @@ class GaugeTransformerLM(nn.Module):
             ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
             ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
             ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
+            diagonal_covariance=diagonal_covariance,
         )
 
         # =================================================================

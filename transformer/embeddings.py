@@ -58,6 +58,7 @@ class GaugeTokenEmbedding(nn.Module):
         learnable_phi: bool = False,
         gauge_fixed_priors: bool = False,
         generators: Optional[torch.Tensor] = None,
+        diagonal_covariance: bool = False,
     ):
         """
         Initialize gauge token embedding.
@@ -75,6 +76,8 @@ class GaugeTokenEmbedding(nn.Module):
                                gauge covariance: p_i = Ω_ij[p_j] where Ω_ij = R_i R_j^{-1}.
                                Requires generators for computing rotations.
             generators: SO(3) generators (3, K, K), required if gauge_fixed_priors=True
+            diagonal_covariance: If True, output sigma as (B,N,K) diagonal variances
+                                instead of (B,N,K,K) full matrices. Saves O(K) memory.
         """
         super().__init__()
         self.vocab_size = vocab_size
@@ -83,6 +86,7 @@ class GaugeTokenEmbedding(nn.Module):
         self.learnable_sigma = learnable_sigma
         self.learnable_phi = learnable_phi
         self.gauge_fixed_priors = gauge_fixed_priors
+        self.diagonal_covariance = diagonal_covariance
 
         if gauge_fixed_priors and generators is None:
             raise ValueError("gauge_fixed_priors=True requires generators to be provided")
@@ -153,7 +157,8 @@ class GaugeTokenEmbedding(nn.Module):
 
         Returns:
             mu: (batch, num_agents, K) mean beliefs (one per agent, NOT per spatial point)
-            sigma: (batch, num_agents, K, K) covariances (one per agent)
+            sigma: (batch, num_agents, K, K) covariances if diagonal_covariance=False
+                   (batch, num_agents, K) diagonal variances if diagonal_covariance=True
             phi: (batch, num_agents, 3) gauge frames (one per agent)
 
         NOTE: seq_len = number of agents at the single point c*
@@ -195,7 +200,13 @@ class GaugeTokenEmbedding(nn.Module):
 
             # Rotate base prior covariance: Σ_i = R_i @ Σ_0 @ R_i^T
             # R: (B, N, K, K), Sigma_0: (K, K)
-            sigma = torch.einsum('bnij,jk,bnlk->bnil', R, Sigma_0, R)  # (B, N, K, K)
+            if self.diagonal_covariance:
+                # For diagonal mode with gauge_fixed_priors, rotations mix dims
+                # so we can't stay diagonal. Fall back to extracting diagonal.
+                sigma_full = torch.einsum('bnij,jk,bnlk->bnil', R, Sigma_0, R)
+                sigma = torch.diagonal(sigma_full, dim1=-2, dim2=-1)  # (B, N, K)
+            else:
+                sigma = torch.einsum('bnij,jk,bnlk->bnil', R, Sigma_0, R)  # (B, N, K, K)
         else:
             # Standard per-token embeddings
             # μ(token_i) for each agent i at c*
@@ -212,8 +223,12 @@ class GaugeTokenEmbedding(nn.Module):
                 sigma_diag = sigma_diag.unsqueeze(0).unsqueeze(0)  # (1, 1, K)
                 sigma_diag = sigma_diag.expand(batch_size, num_agents, -1)  # (B, N, K)
 
-            # Convert to full covariance matrices (diagonal)
-            sigma = torch.diag_embed(sigma_diag)  # (B, N, K, K)
+            if self.diagonal_covariance:
+                # Keep as diagonal variances (B, N, K)
+                sigma = sigma_diag
+            else:
+                # Convert to full covariance matrices (diagonal)
+                sigma = torch.diag_embed(sigma_diag)  # (B, N, K, K)
 
         return mu, sigma, phi
 
