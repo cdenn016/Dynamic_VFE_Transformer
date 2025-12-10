@@ -89,6 +89,8 @@ class GaugeTransformerBlock(nn.Module):
         ffn_hamiltonian_mass_use_incoming_social: bool = False,
         ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
         ffn_hamiltonian_evolve_mass: bool = False,
+        # Diagonal covariance mode
+        diagonal_covariance: bool = False,
     ):
         """
         Initialize gauge transformer block.
@@ -129,6 +131,7 @@ class GaugeTransformerBlock(nn.Module):
         self.evolve_phi = evolve_phi
         self.ffn_mode = ffn_mode
         self.generators = generators  # Store for variational FFN
+        self.diagonal_covariance = diagonal_covariance
 
         # =====================================================================
         # Attention Sublayer
@@ -139,6 +142,7 @@ class GaugeTransformerBlock(nn.Module):
             kappa_beta=kappa_beta,
             epsilon=1e-8,
             aggregate_mode='full_distribution' if evolve_sigma else 'mean_only',
+            diagonal_covariance=diagonal_covariance,
         )
 
         self.norm1 = nn.LayerNorm(embed_dim)
@@ -176,6 +180,8 @@ class GaugeTransformerBlock(nn.Module):
             hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
             hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
             hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
+            # Diagonal covariance mode
+            diagonal_covariance=diagonal_covariance,
         )
 
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -409,6 +415,8 @@ class GaugeTransformerStack(nn.Module):
         ffn_hamiltonian_mass_use_incoming_social: bool = False,
         ffn_hamiltonian_mass_use_outgoing_recoil: bool = False,
         ffn_hamiltonian_evolve_mass: bool = False,
+        # Diagonal covariance mode
+        diagonal_covariance: bool = False,
     ):
         """
         Initialize stack of transformer blocks.
@@ -479,6 +487,8 @@ class GaugeTransformerStack(nn.Module):
                 ffn_hamiltonian_mass_use_incoming_social=ffn_hamiltonian_mass_use_incoming_social,
                 ffn_hamiltonian_mass_use_outgoing_recoil=ffn_hamiltonian_mass_use_outgoing_recoil,
                 ffn_hamiltonian_evolve_mass=ffn_hamiltonian_evolve_mass,
+                # Diagonal covariance mode
+                diagonal_covariance=diagonal_covariance,
             )
             for _ in range(n_layers)
         ])

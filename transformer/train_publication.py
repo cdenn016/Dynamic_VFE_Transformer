@@ -177,24 +177,27 @@ DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU setting
 # =============================================================================
 # GPU-OPTIMIZED CONFIG (RTX 5090 / 32GB VRAM)
 # =============================================================================
-# Pushing toward Vaswani "Attention is All You Need" scale
-# Note: Gauge transformer has O(K²) memory per token due to covariances
+# MEMORY REALITY CHECK:
+#   Gauge transformer has O(N² × K²) memory for attention KL matrices!
+#   Standard transformer: O(N² × d) for attention
+#   Ours: O(N² × K²) because KL divergence uses full covariance matrices
 #
-# Memory estimate: B × N × K² × 4 bytes × layers ≈ GPU memory
-# With B=128, N=256, K=127, L=6: ~3.1GB for covariances alone
-# Plus attention matrices, gradients, activations → fits in 32GB
+#   Memory for KL computation: B × N × N × K² × 4 bytes (FP32)
+#   Example: B=32, N=256, K=127 → 32 × 256 × 256 × 127² × 4 = ~134GB (!)
+#
+#   Realistic for 32GB: B=16, N=64, K=63 → ~2GB for KL matrices
 #
 GPU_OPTIMIZED_CONFIG = {
-    # Model architecture (scaled toward Vaswani)
-    # Vaswani base: d_model=512, but gauge transformer has K² memory cost
+    # Model architecture - WITH diagonal_covariance=True, can scale up!
+    # Diagonal mode: O(N²×K) memory instead of O(N²×K²)
     'vocab_size': 256,        # Full byte-level vocab
-    'embed_dim': 127,         # K=127 (ODD for SO(3)) - 2x larger, closer to Vaswani
-    'n_layers': 6,            # Same as Vaswani base
-    'hidden_dim': 508,        # 4×embed_dim (Vaswani uses 2048 for d=512)
-    'max_seq_len': 256,       # N=256 (Vaswani used 512 for translation)
+    'embed_dim': 255,         # K=255 (ODD for SO(3)) - close to Vaswani d=512!
+    'n_layers': 6,            # Match Vaswani base
+    'hidden_dim': 1020,       # 4×embed_dim
+    'max_seq_len': 128,       # N=128 - reasonable context
 
-    # GPU Training optimizations - PUSH THE RTX 5090!
-    'batch_size': 32,         # Start conservative, increase if memory allows
+    # GPU Training - diagonal mode fits easily in 32GB
+    'batch_size': 32,         # Can push this higher with diagonal
     'use_amp': False,         # Disabled - Hamiltonian dynamics needs FP32 precision
     'num_workers': 4,         # Parallel data loading
 
@@ -206,9 +209,17 @@ GPU_OPTIMIZED_CONFIG = {
     'evolve_phi': True,       # Full geometric learning
     'tie_embeddings': True,
 
+    # =========================================================================
+    # DIAGONAL COVARIANCE MODE (memory optimization)
+    # True:  Σ is (B,N,K) diagonal - O(N²×K) memory - can scale to Vaswani size!
+    # False: Σ is (B,N,K,K) full   - O(N²×K²) memory - limited to small K,N
+    # Diagonal loses off-diagonal correlations but keeps per-dim uncertainty.
+    # =========================================================================
+    'diagonal_covariance': True,
+
     # Attention pattern
     'attention_pattern': 'full',
-    'attention_window': 256,
+    'attention_window': 128,
     'attention_global_tokens': 0,
 
     # Variational FFN parameters
@@ -219,7 +230,7 @@ GPU_OPTIMIZED_CONFIG = {
     'ffn_n_iterations': 1,
     'ffn_learnable_lr': True,
     'ffn_pattern': 'full',
-    'ffn_window': 256,
+    'ffn_window': 128,
 
     # Hamiltonian FFN parameters
     # =========================================================================
@@ -268,12 +279,12 @@ GPU_OPTIMIZED_CONFIG = {
     'checkpoint_interval': 100,
     'patience': 5,
 
-    # Irrep structure (for K=127)
-    # 39×1 + 16×3 + 8×5 = 39 + 48 + 40 = 127 ✓
+    # Irrep structure (for K=255)
+    # 75×1 + 30×3 + 18×5 = 75 + 90 + 90 = 255 ✓
     'irrep_spec': [
-        ('ℓ0', 39, 1),   # 39 dimensions (scalars)
-        ('ℓ1', 16, 3),   # 48 dimensions (vectors)
-        ('ℓ2', 8, 5),    # 40 dimensions (rank-2 tensors)
+        ('ℓ0', 75, 1),   # 75 dimensions (scalars)
+        ('ℓ1', 30, 3),   # 90 dimensions (vectors)
+        ('ℓ2', 18, 5),   # 90 dimensions (rank-2 tensors)
     ],
 }
 

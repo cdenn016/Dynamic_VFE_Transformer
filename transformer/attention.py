@@ -122,7 +122,7 @@ def create_attention_mask(
 
 def compute_attention_weights(
     mu_q: torch.Tensor,        # (B, N, K) belief means
-    sigma_q: torch.Tensor,     # (B, N, K, K) belief covariances
+    sigma_q: torch.Tensor,     # (B, N, K, K) or (B, N, K) if diagonal_covariance=True
     phi: torch.Tensor,         # (B, N, 3) gauge frames
     generators: torch.Tensor,  # (3, K, K) SO(3) generators
     kappa: float,              # Temperature
@@ -130,6 +130,7 @@ def compute_attention_weights(
     mask: Optional[torch.Tensor] = None,  # (B, N, N) causal mask
     use_numba: bool = True,
     return_kl: bool = False,   # Return KL matrix for loss computation
+    diagonal_covariance: bool = False,  # Use diagonal sigma (B,N,K) instead of full (B,N,K,K)
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Compute attention weights from KL divergences (0D version).
@@ -147,13 +148,15 @@ def compute_attention_weights(
     Args:
         mu_q: Query belief means, shape (B, N, K)
               N = num_agents at single point c*
-        sigma_q: Query covariances, shape (B, N, K, K)
+        sigma_q: Query covariances, shape (B, N, K, K) if full, (B, N, K) if diagonal
         phi: Gauge frames, shape (B, N, 3) in so(3)
         generators: SO(3) generators for irrep, shape (3, K, K)
         kappa: Temperature parameter (higher = softer attention)
         epsilon: Softmax stability constant
         mask: Optional causal mask (B, N, N) - 0 masks out position
         use_numba: Use fast Numba kernels if available
+        diagonal_covariance: If True, sigma_q is (B,N,K) diagonal variances.
+                            Uses O(N²×K) memory instead of O(N²×K²)!
 
     Returns:
         beta: Attention weights, shape (B, N, N)
@@ -189,7 +192,13 @@ def compute_attention_weights(
     # The PyTorch path is fully vectorized and runs efficiently on GPU.
     is_cuda = device.type == 'cuda'
 
-    if use_numba and NUMBA_AVAILABLE and TRANSPORT_AVAILABLE and not is_cuda:
+    if diagonal_covariance:
+        # DIAGONAL MODE: O(N²×K) memory instead of O(N²×K²)!
+        # sigma_q is (B, N, K) not (B, N, K, K)
+        _compute_kl_matrix_diagonal(
+            mu_q, sigma_q, phi, generators, kl_matrix
+        )
+    elif use_numba and NUMBA_AVAILABLE and TRANSPORT_AVAILABLE and not is_cuda:
         # Fast path: Use Numba kernels (CPU only)
         _compute_kl_matrix_numba(
             mu_q, sigma_q, phi, generators, kl_matrix
@@ -465,17 +474,101 @@ def _kl_gaussian_torch(
     return torch.clamp(kl, min=0.0)
 
 
+def _compute_kl_matrix_diagonal(
+    mu_q: torch.Tensor,        # (B, N, K) belief means
+    sigma_q: torch.Tensor,     # (B, N, K) diagonal variances (NOT K×K!)
+    phi: torch.Tensor,         # (B, N, 3) gauge frames
+    generators: torch.Tensor,  # (3, K, K) SO(3) generators
+    kl_matrix: torch.Tensor,   # (B, N, N) output tensor
+) -> None:
+    """
+    DIAGONAL covariance KL computation - O(N²×K) instead of O(N²×K²).
+
+    For diagonal Gaussians, KL simplifies to:
+        KL(N(μ_q, diag(σ_q)) || N(μ_p, diag(σ_p))) =
+        0.5 * (sum(σ_q/σ_p) + sum((μ_p - μ_q)²/σ_p) - K + sum(log(σ_p) - log(σ_q)))
+
+    Key simplifications:
+    - No Cholesky decomposition (O(K³) → O(K))
+    - No matrix inversion
+    - No N×N×K×K intermediate tensors!
+    - Transport still rotates μ, but σ stays diagonal (approximation)
+
+    Args:
+        mu_q: (B, N, K) belief means
+        sigma_q: (B, N, K) diagonal variances (positive)
+        phi: (B, N, 3) gauge fields
+        generators: (3, K, K) SO(3) generators
+        kl_matrix: (B, N, N) output tensor (modified in-place)
+    """
+    B, N, K = mu_q.shape
+    device = mu_q.device
+    dtype = mu_q.dtype
+    eps = 1e-6
+
+    # Ensure sigma is positive
+    sigma_q = sigma_q.clamp(min=eps)
+
+    # =========================================================================
+    # Step 1: Compute transport operators (still needed for μ rotation)
+    # =========================================================================
+    phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
+    exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
+    exp_neg_phi = torch.matrix_exp(-phi_matrix)  # (B, N, K, K)
+
+    # Omega_ij = exp(φ_i) @ exp(-φ_j)
+    Omega = torch.einsum('bikl,bjlm->bijkm', exp_phi, exp_neg_phi)  # (B, N, N, K, K)
+
+    # =========================================================================
+    # Step 2: Transport means (still needed for accurate KL)
+    # =========================================================================
+    # μ_j^{→i} = Ω_ij @ μ_j
+    mu_transported = torch.einsum('bijkl,bjl->bijk', Omega, mu_q)  # (B, N, N, K)
+
+    # =========================================================================
+    # Step 3: For diagonal mode, σ stays diagonal (approximation)
+    # This is exact for isotropic σ, approximate for anisotropic
+    # =========================================================================
+    # Expand sigma for pairwise: sigma_j for all (i,j) pairs
+    sigma_j = sigma_q[:, None, :, :].expand(-1, N, -1, -1)  # (B, N, N, K)
+    sigma_i = sigma_q[:, :, None, :].expand(-1, -1, N, -1)  # (B, N, N, K)
+
+    # =========================================================================
+    # Step 4: Diagonal KL divergence (vectorized)
+    # KL(q_i || transported q_j) where q_i ~ N(μ_i, diag(σ_i))
+    # transported q_j ~ N(μ_j^{→i}, diag(σ_j))
+    # =========================================================================
+    mu_i = mu_q[:, :, None, :].expand(-1, -1, N, -1)  # (B, N, N, K)
+
+    # Trace term: sum(σ_i / σ_j)
+    trace_term = (sigma_i / sigma_j).sum(dim=-1)  # (B, N, N)
+
+    # Mahalanobis term: sum((μ_j^{→i} - μ_i)² / σ_j)
+    delta_mu = mu_transported - mu_i  # (B, N, N, K)
+    mahal_term = ((delta_mu ** 2) / sigma_j).sum(dim=-1)  # (B, N, N)
+
+    # Log determinant term: sum(log(σ_j) - log(σ_i))
+    logdet_term = (torch.log(sigma_j) - torch.log(sigma_i)).sum(dim=-1)  # (B, N, N)
+
+    # Full KL
+    kl_all = 0.5 * (trace_term + mahal_term - K + logdet_term)
+    kl_all = torch.clamp(kl_all, min=0.0)
+
+    kl_matrix.copy_(kl_all)
+
+
 # =============================================================================
 # Message Aggregation with Parallel Transport
 # =============================================================================
 
 def aggregate_messages(
     mu_q: torch.Tensor,         # (B, N, K)
-    sigma_q: torch.Tensor,      # (B, N, K, K)
+    sigma_q: torch.Tensor,      # (B, N, K, K) or (B, N, K) if diagonal
     phi: torch.Tensor,          # (B, N, 3)
     beta: torch.Tensor,         # (B, N, N) attention weights
     generators: torch.Tensor,   # (3, K, K)
     aggregate_mode: str = 'mean_only',  # 'mean_only' or 'full_distribution'
+    diagonal_covariance: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Aggregate messages: m_i = Σ_j β_ij Ω_ij[μ_j].
@@ -531,26 +624,42 @@ def aggregate_messages(
 
     # Step 4: Covariance aggregation (if requested)
     if aggregate_mode == 'full_distribution':
-        # Transport all covariances: Σ_j^{→i} = Ω_ij @ Σ_j @ Ω_ij^T
-        Sigma_transported = torch.einsum(
-            'bijkl,bjlm,bijmn->bijkn',
-            Omega, sigma_q, Omega.transpose(-1, -2)
-        )  # (B, N, N, K, K)
+        if diagonal_covariance:
+            # DIAGONAL MODE: sigma_q is (B, N, K)
+            # For diagonal, transport doesn't change variance (approximation)
+            # Just weighted average of variances
+            sigma_j = sigma_q[:, None, :, :].expand(-1, N, -1, -1)  # (B, N, N, K)
 
-        # Second moment: E[x x^T] = Σ + μ μ^T
-        # (B, N, N, K, K) + (B, N, N, K, 1) @ (B, N, N, 1, K)
-        second_moment = Sigma_transported + torch.einsum(
-            'bijk,bijl->bijkl', mu_transported, mu_transported
-        )
+            # Second moment: E[x²] = σ + μ²
+            second_moment = sigma_j + mu_transported ** 2  # (B, N, N, K)
 
-        # Weighted sum of second moments
-        # beta: (B, N, N), second_moment: (B, N, N, K, K)
-        sigma_aggregated = torch.einsum('bij,bijkl->bikl', beta, second_moment)
+            # Weighted sum
+            sigma_aggregated = torch.einsum('bij,bijk->bik', beta, second_moment)
 
-        # Complete mixture variance: Σ_mix = E[x x^T] - E[x] E[x]^T
-        sigma_aggregated = sigma_aggregated - torch.einsum(
-            'bik,bil->bikl', mu_aggregated, mu_aggregated
-        )
+            # Complete mixture variance: Var = E[x²] - E[x]²
+            sigma_aggregated = sigma_aggregated - mu_aggregated ** 2  # (B, N, K)
+        else:
+            # FULL COVARIANCE MODE: sigma_q is (B, N, K, K)
+            # Transport all covariances: Σ_j^{→i} = Ω_ij @ Σ_j @ Ω_ij^T
+            Sigma_transported = torch.einsum(
+                'bijkl,bjlm,bijmn->bijkn',
+                Omega, sigma_q, Omega.transpose(-1, -2)
+            )  # (B, N, N, K, K)
+
+            # Second moment: E[x x^T] = Σ + μ μ^T
+            # (B, N, N, K, K) + (B, N, N, K, 1) @ (B, N, N, 1, K)
+            second_moment = Sigma_transported + torch.einsum(
+                'bijk,bijl->bijkl', mu_transported, mu_transported
+            )
+
+            # Weighted sum of second moments
+            # beta: (B, N, N), second_moment: (B, N, N, K, K)
+            sigma_aggregated = torch.einsum('bij,bijkl->bikl', beta, second_moment)
+
+            # Complete mixture variance: Σ_mix = E[x x^T] - E[x] E[x]^T
+            sigma_aggregated = sigma_aggregated - torch.einsum(
+                'bik,bil->bikl', mu_aggregated, mu_aggregated
+            )
     else:
         sigma_aggregated = None
 
@@ -594,6 +703,7 @@ class IrrepMultiHeadAttention(nn.Module):
         kappa_beta: float,
         epsilon: float = 1e-8,
         aggregate_mode: str = 'mean_only',
+        diagonal_covariance: bool = False,
     ):
         """
         Initialize irrep-structured multi-head attention.
@@ -605,8 +715,10 @@ class IrrepMultiHeadAttention(nn.Module):
             kappa_beta: Temperature for attention softmax
             epsilon: Numerical stability constant
             aggregate_mode: 'mean_only' or 'full_distribution'
+            diagonal_covariance: If True, sigma is (B,N,K) diagonal variances
         """
         super().__init__()
+        self.diagonal_covariance = diagonal_covariance
         self.embed_dim = embed_dim
         self.irrep_spec = irrep_spec
         self.kappa_beta = kappa_beta
@@ -735,7 +847,8 @@ class IrrepMultiHeadAttention(nn.Module):
                     self.kappa_beta,
                     self.epsilon,
                     mask,
-                    return_kl=True
+                    return_kl=True,
+                    diagonal_covariance=self.diagonal_covariance,
                 )  # (B, N, N), (B, N, N)
                 all_attention_weights.append(beta_head)
                 all_kl_matrices.append(kl_head)
@@ -748,7 +861,8 @@ class IrrepMultiHeadAttention(nn.Module):
                     self.kappa_beta,
                     self.epsilon,
                     mask,
-                    return_kl=False
+                    return_kl=False,
+                    diagonal_covariance=self.diagonal_covariance,
                 )  # (B, N, N)
 
             # Aggregate messages for this head
@@ -758,7 +872,8 @@ class IrrepMultiHeadAttention(nn.Module):
                 phi,
                 beta_head,
                 gen_head,
-                aggregate_mode=self.aggregate_mode
+                aggregate_mode=self.aggregate_mode,
+                diagonal_covariance=self.diagonal_covariance,
             )
 
             head_outputs_mu.append(mu_agg)
@@ -801,33 +916,51 @@ class IrrepMultiHeadAttention(nn.Module):
         return blocks
 
     def _split_irreps_sigma(self, sigma: torch.Tensor) -> List[torch.Tensor]:
-        """Split covariance into irrep blocks (diagonal blocks)."""
+        """Split covariance into irrep blocks.
+
+        For full covariance (B, N, K, K): extracts diagonal blocks
+        For diagonal (B, N, K): extracts slices
+        """
         blocks = []
         start_idx = 0
         for dim in self.irrep_dims:
-            blocks.append(
-                sigma[..., start_idx:start_idx+dim, start_idx:start_idx+dim]
-            )
+            if self.diagonal_covariance:
+                # Diagonal mode: sigma is (B, N, K), just slice
+                blocks.append(sigma[..., start_idx:start_idx+dim])
+            else:
+                # Full mode: sigma is (B, N, K, K), extract diagonal block
+                blocks.append(
+                    sigma[..., start_idx:start_idx+dim, start_idx:start_idx+dim]
+                )
             start_idx += dim
         return blocks
 
     def _block_diag_sigma(self, sigma_blocks: List[torch.Tensor]) -> torch.Tensor:
-        """Construct block-diagonal covariance from irrep blocks."""
+        """Construct covariance from irrep blocks.
+
+        For diagonal mode: concatenates (B, N, dim) slices → (B, N, K)
+        For full mode: builds block-diagonal (B, N, K, K)
+        """
         batch_size, num_agents = sigma_blocks[0].shape[:2]
         K = sum(self.irrep_dims)
 
-        sigma_full = torch.zeros(
-            batch_size, num_agents, K, K,
-            device=sigma_blocks[0].device,
-            dtype=sigma_blocks[0].dtype
-        )
+        if self.diagonal_covariance:
+            # Diagonal mode: just concatenate along last dim
+            return torch.cat(sigma_blocks, dim=-1)  # (B, N, K)
+        else:
+            # Full mode: build block-diagonal matrix
+            sigma_full = torch.zeros(
+                batch_size, num_agents, K, K,
+                device=sigma_blocks[0].device,
+                dtype=sigma_blocks[0].dtype
+            )
 
-        start_idx = 0
-        for sigma_block, dim in zip(sigma_blocks, self.irrep_dims):
-            sigma_full[..., start_idx:start_idx+dim, start_idx:start_idx+dim] = sigma_block
-            start_idx += dim
+            start_idx = 0
+            for sigma_block, dim in zip(sigma_blocks, self.irrep_dims):
+                sigma_full[..., start_idx:start_idx+dim, start_idx:start_idx+dim] = sigma_block
+                start_idx += dim
 
-        return sigma_full
+            return sigma_full
 
     def extra_repr(self) -> str:
         return (

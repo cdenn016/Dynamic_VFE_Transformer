@@ -77,6 +77,8 @@ class GaugeFFN(nn.Module):
         hamiltonian_mass_use_incoming_social: bool = False,  # Σβ_{ik}Λ̃_{qk} term
         hamiltonian_mass_use_outgoing_recoil: bool = False,  # Σβ_{ji}Λ_{qi} term
         hamiltonian_evolve_mass: bool = False,  # Recompute M at each leapfrog step?
+        # Diagonal covariance mode
+        diagonal_covariance: bool = False,
     ):
         """
         Initialize unified FFN.
@@ -210,6 +212,7 @@ class GaugeFFN(nn.Module):
                 mass_config=mass_config,  # Extended mass from paper
                 gamma=hamiltonian_gamma,
                 evolve_mass=hamiltonian_evolve_mass,  # Recompute M at each step?
+                diagonal_covariance=diagonal_covariance,
             )
 
     def forward(
