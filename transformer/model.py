@@ -125,6 +125,9 @@ class GaugeTransformerLM(nn.Module):
         diagonal_covariance = config.get('diagonal_covariance', False)
         self.diagonal_covariance = diagonal_covariance
 
+        # Store evolve_phi for cross-layer transport caching optimization
+        self.evolve_phi = evolve_phi
+
         # Sparse attention/FFN config
         self.attention_pattern = config.get('attention_pattern', 'full')
         self.attention_window = config.get('attention_window', 64)
