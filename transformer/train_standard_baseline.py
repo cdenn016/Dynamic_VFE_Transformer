@@ -217,9 +217,29 @@ def train_standard_baseline(
         betas=(0.9, 0.999),
     )
 
+    # Learning rate scheduler with warmup + cosine decay
+    max_steps = config['max_steps']
+    warmup_steps = config.get('warmup_steps', max(10, max_steps // 10))  # 10% warmup
+    min_lr = config.get('min_lr', lr * 0.1)  # Decay to 10% of initial lr
+
+    def lr_lambda(step):
+        """Warmup then cosine decay."""
+        if step < warmup_steps:
+            # Linear warmup
+            return step / warmup_steps
+        else:
+            # Cosine decay from 1.0 to min_lr/lr
+            progress = (step - warmup_steps) / (max_steps - warmup_steps)
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+            return (min_lr / lr) + (1 - min_lr / lr) * cosine_decay
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
     print(f"\nOptimizer: AdamW")
     print(f"  Learning rate: {lr}")
     print(f"  Weight decay:  {config.get('weight_decay', 0.01)}")
+    print(f"  Warmup steps:  {warmup_steps}")
+    print(f"  Min LR:        {min_lr}")
 
     # Initialize metrics tracker
     metrics_path = checkpoint_path / 'metrics.csv'
@@ -286,6 +306,10 @@ def train_standard_baseline(
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.get('grad_clip', 1.0))
         optimizer.step()
+        scheduler.step()
+
+        # Get current learning rate
+        current_lr = scheduler.get_last_lr()[0]
 
         step_time = time.time() - step_start
         train_losses.append(loss.item())
@@ -295,7 +319,7 @@ def train_standard_baseline(
             step=step,
             train_loss=loss.item(),
             train_ce=loss.item(),  # For standard transformer, total loss = CE loss
-            lr=lr,
+            lr=current_lr,
             grad_norm=grad_norm,
             step_time=step_time,
             batch_size=batch_size,
@@ -310,7 +334,7 @@ def train_standard_baseline(
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
             'ppl': f'{ppl:.1f}',
-            'lr': f'{lr:.2e}',
+            'lr': f'{current_lr:.2e}',
             'time': f'{step_time:.2f}s'
         })
 
@@ -321,7 +345,7 @@ def train_standard_baseline(
                   f"Loss: {loss.item():.4f} | "
                   f"PPL: {ppl:.1f} | "
                   f"BPC: {bpc:.3f} | "
-                  f"LR: {lr:.2e}")
+                  f"LR: {current_lr:.2e}")
 
         # Validation
         if step % eval_interval == 0 or step == max_steps:
@@ -429,7 +453,7 @@ def train_standard_baseline(
 def main():
     parser = argparse.ArgumentParser(description='Train standard transformer baseline')
     parser.add_argument('--config', type=str, default='debug',
-                        choices=['debug', 'debug_matched_lr', 'debug_moderate_lr', 'convergence_test', 'standard', 'extended'],
+                        choices=['debug', 'debug_matched_lr', 'debug_moderate_lr', 'convergence_test', 'standard', 'extended', 'stable'],
                         help='Configuration preset')
     parser.add_argument('--lr', type=float, default=None,
                         help='Learning rate (overrides config default)')
@@ -540,6 +564,26 @@ def main():
             'grad_clip': 1.0,
             'log_interval': 10,
             'eval_interval': 50,
+        },
+        # Stable config for longer training with proper LR schedule
+        'stable': {
+            'vocab_size': 5000,       # BPE tokenizer
+            'embed_dim': 128,         # 128 = 4 × 32 (clean division for heads)
+            'n_layers': 6,
+            'n_heads': 4,             # 128 / 4 = 32 head_dim
+            'hidden_dim': 512,        # 4 × embed_dim
+            'max_seq_len': 48,
+            'dropout': 0.1,
+            'tie_embeddings': True,
+            'batch_size': 16,
+            'max_steps': 500,
+            'lr': 0.0003,             # Standard transformer LR (3e-4)
+            'min_lr': 0.00003,        # 10% of peak
+            'warmup_steps': 50,       # 10% warmup
+            'weight_decay': 0.01,
+            'grad_clip': 1.0,
+            'log_interval': 10,
+            'eval_interval': 25,
         },
     }
 
