@@ -61,7 +61,7 @@ from typing import Dict, List, Tuple, Any
 
 
 from transformer.model import GaugeTransformerLM
-from transformer.data import create_dataloaders
+from transformer.data import create_dataloaders, create_char_dataloaders
 from transformer.train import compute_free_energy_loss
 from transformer.train_fast import FastTrainer, FastTrainingConfig
 from transformer.publication_metrics import PublicationMetrics, AblationConfig, AblationResult
@@ -190,6 +190,7 @@ DEFAULT_USE_GPU_OPTIMIZED = True  # Set True for RTX 5090 / high-end GPU setting
 GPU_OPTIMIZED_CONFIG = {
     # Model architecture - WITH diagonal_covariance=True, can scale up!
     # Diagonal mode: O(N²×K) memory instead of O(N²×K²)
+    'tokenizer': 'bpe',       # 'char', 'bpe', or 'auto'
     'vocab_size': 5000,       # BPE subwords (top 5K from GPT-2 tokenizer)
     'embed_dim': 255,         # K=255 (ODD for SO(3)) - close to Vaswani d=512!
     'n_layers': 6,            # Match Vaswani base
@@ -293,6 +294,7 @@ GPU_OPTIMIZED_CONFIG = {
 # =============================================================================
 PUBLICATION_CONFIG = {
     # Model architecture (minimal but meaningful)
+    'tokenizer': 'char',      # 'char', 'bpe', or 'auto' (auto: char if vocab<=256)
     'vocab_size': 200,        # Byte-level vocab (up to 256). Set 100-256 for experiments.
     'embed_dim': 21,          # K=21 (ODD - required for SO(3) irreps!)
     'n_layers': 3,            # Depth for non-trivial learning
@@ -809,15 +811,32 @@ def run_single_experiment(
     # =================================================================
 
     print("\n" + "="*70)
-    print("LOADING WIKITEXT-2 WITH BPE TOKENIZATION")
+    print("LOADING WIKITEXT-2 DATA")
     print("="*70)
 
-    train_loader, val_loader, actual_vocab_size = create_dataloaders(
-        max_seq_len=config['max_seq_len'],
-        batch_size=config['batch_size'],
-        vocab_size=config['vocab_size'],  # Top K BPE tokens
-        num_workers=config.get('num_workers', 0),
-    )
+    # Tokenizer selection: 'char', 'bpe', or 'auto' (default)
+    # 'auto' uses char for vocab_size <= 256, bpe otherwise
+    tokenizer_mode = config.get('tokenizer', 'auto')
+    if tokenizer_mode == 'auto':
+        use_char = config['vocab_size'] <= 256
+    else:
+        use_char = (tokenizer_mode == 'char')
+
+    if use_char:
+        print(f"Using CHARACTER-LEVEL tokenizer (vocab_size={config['vocab_size']})")
+        train_loader, val_loader, actual_vocab_size = create_char_dataloaders(
+            max_seq_len=config['max_seq_len'],
+            batch_size=config['batch_size'],
+            num_workers=config.get('num_workers', 0),
+        )
+    else:
+        print(f"Using BPE tokenizer (vocab_size={config['vocab_size']})")
+        train_loader, val_loader, actual_vocab_size = create_dataloaders(
+            max_seq_len=config['max_seq_len'],
+            batch_size=config['batch_size'],
+            vocab_size=config['vocab_size'],  # Top K BPE tokens
+            num_workers=config.get('num_workers', 0),
+        )
 
     config['vocab_size'] = actual_vocab_size
 
@@ -832,7 +851,7 @@ def run_single_experiment(
     print(f"  N (seq len): {config['max_seq_len']}")
     print(f"  K (embed): {config['embed_dim']}")
     print(f"  Layers: {config['n_layers']}")
-    print(f"  Vocab: {actual_vocab_size} (BPE)")
+    print(f"  Vocab: {actual_vocab_size} ({'char' if use_char else 'BPE'})")
 
     model = GaugeTransformerLM(config)
     model = model.to(device)
