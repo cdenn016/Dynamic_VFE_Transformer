@@ -407,8 +407,9 @@ class PublicationMetricsTracker:
             # Metrics
             'train_ppl', 'train_bpc', 'val_ppl', 'val_bpc',
 
-            # Attention stats
+            # Attention stats (crucial for interpretability!)
             'beta_mean', 'beta_std', 'kl_mean', 'kl_std',
+            'attention_entropy', 'attention_concentration',
 
             # Learning rates
             'mu_lr', 'sigma_lr', 'phi_lr', 'ffn_lr',
@@ -453,11 +454,13 @@ class PublicationMetricsTracker:
             'val_ppl': None,
             'val_bpc': None,
 
-            # Attention
+            # Attention (crucial for interpretability!)
             'beta_mean': metrics.get('beta_mean'),
             'beta_std': metrics.get('beta_std'),
             'kl_mean': metrics.get('kl_mean'),
             'kl_std': metrics.get('kl_std'),
+            'attention_entropy': metrics.get('attention_entropy'),
+            'attention_concentration': metrics.get('attention_concentration'),
 
             # Learning rates
             'mu_lr': lrs.get('mu_embed', 0),
@@ -507,12 +510,68 @@ class PublicationTrainer(FastTrainer):
         # Basic CSV metrics tracker
         metrics_path = self.config.checkpoint_dir / 'metrics.csv'
         self.metrics_tracker = PublicationMetricsTracker(metrics_path)
-        print(f"📊 Logging publication metrics to: {metrics_path}")
+        print(f"[INFO] Logging publication metrics to: {metrics_path}")
 
         # Comprehensive publication metrics (optional)
         self.pub_metrics = publication_metrics
         if self.pub_metrics:
-            print(f"📈 Comprehensive metrics enabled: {self.pub_metrics.experiment_dir}")
+            print(f"[INFO] Comprehensive metrics enabled: {self.pub_metrics.experiment_dir}")
+
+        # Track attention visualization count
+        self._attention_viz_count = 0
+
+    def save_attention_visualization(self, step: int, batch: Tuple[torch.Tensor, torch.Tensor]):
+        """
+        Save attention pattern visualization for interpretability analysis.
+
+        Generates attention heatmap from a forward pass through the model.
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return  # Skip if matplotlib unavailable
+
+        self.model.eval()
+        input_ids, target_ids = batch
+        input_ids = input_ids.to(self.device)
+
+        # Get attention from forward pass
+        with torch.no_grad():
+            if hasattr(self.model, 'forward_with_attention'):
+                _, attn_info = self.model.forward_with_attention(input_ids, targets=None)
+                beta = attn_info.get('beta')
+
+                if beta is not None:
+                    # Average over heads: (B, H, N, N) -> (B, N, N)
+                    if beta.dim() == 4:
+                        attn = beta[0].mean(dim=0).cpu().numpy()
+                    else:
+                        attn = beta[0].cpu().numpy()
+
+                    N = attn.shape[0]
+
+                    # Create visualization
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    im = ax.imshow(attn, cmap='Blues', aspect='auto')
+
+                    ax.set_xlabel('Key Position (j)')
+                    ax.set_ylabel('Query Position (i)')
+                    ax.set_title(f'Attention Weights (Step {step})')
+                    plt.colorbar(im, ax=ax, label='Attention Weight')
+
+                    # Save to checkpoint directory
+                    save_dir = self.config.checkpoint_dir / 'attention_patterns'
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    fig.savefig(save_dir / f'attention_step_{step:06d}.png', dpi=100, bbox_inches='tight')
+                    plt.close(fig)
+
+                    self._attention_viz_count += 1
+                    if self._attention_viz_count == 1:
+                        print(f"[INFO] Attention patterns saved to: {save_dir}/")
+
+        self.model.train()
 
     def train_step(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Train step with comprehensive metrics and AMP support."""
@@ -588,6 +647,9 @@ class PublicationTrainer(FastTrainer):
             'beta_std': 0,  # Could compute if needed
             'kl_mean': full_metrics.get('attention/kl_mean', 0),
             'kl_std': 0,
+            # Crucial attention interpretability metrics
+            'attention_entropy': full_metrics.get('attention/entropy', 0),
+            'attention_concentration': full_metrics.get('attention/concentration', 0),
         }
 
         # Carry over Hamiltonian diagnostics for physics metrics
@@ -710,11 +772,23 @@ class PublicationTrainer(FastTrainer):
                 if self.pub_metrics:
                     self.pub_metrics.record_validation(step + 1, val_metrics)
 
+                # Log attention entropy/concentration for interpretability
+                attn_entropy = metrics.get('attention_entropy', 0)
+                attn_concentration = metrics.get('attention_concentration', 0)
+
                 print(f"\n  Validation @ step {step+1}:")
                 print(f"    Loss: {val_metrics['loss']:.4f}")
                 print(f"    CE: {val_metrics['ce_loss']:.4f}")
                 print(f"    PPL: {val_metrics['perplexity']:.2f}")
-                print(f"    BPC: {val_metrics['ce_loss']/math.log(2):.3f}\n")
+                print(f"    BPC: {val_metrics['ce_loss']/math.log(2):.3f}")
+                print(f"    Attn entropy: {attn_entropy:.3f} | concentration: {attn_concentration:.3f}\n")
+
+                # Save attention visualization periodically
+                try:
+                    sample_batch = next(iter(self.val_loader))
+                    self.save_attention_visualization(step + 1, sample_batch)
+                except StopIteration:
+                    pass
 
                 # Save best
                 if val_metrics['loss'] < self.best_val_loss:
@@ -724,7 +798,7 @@ class PublicationTrainer(FastTrainer):
                 else:
                     self.patience_counter += 1
                     if self.config.patience > 0 and self.patience_counter >= self.config.patience:
-                        print(f"\n⚠ Early stopping!")
+                        print(f"\n[WARNING] Early stopping!")
                         break
 
             # Checkpointing
@@ -734,7 +808,7 @@ class PublicationTrainer(FastTrainer):
 
         # Save final metrics
         self.metrics_tracker.save()
-        print(f"\n📊 Final metrics saved to: {self.metrics_tracker.save_path}")
+        print(f"\n[INFO] Final metrics saved to: {self.metrics_tracker.save_path}")
 
         # Save comprehensive publication metrics
         if self.pub_metrics:
@@ -751,7 +825,9 @@ class PublicationTrainer(FastTrainer):
                     device=self.device,
                 )
             except Exception as e:
-                print(f"⚠ Could not generate interpretability outputs: {e}")
+                import traceback
+                print(f"[WARNING] Could not generate interpretability outputs: {e}")
+                print(f"  Traceback: {traceback.format_exc()}")
 
             self.pub_metrics.print_summary()
 
