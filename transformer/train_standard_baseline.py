@@ -55,8 +55,8 @@ import numpy as np
 # Import standard transformer
 from transformer.standard_transformer import StandardTransformerLM
 
-# Import data loader (reuse from gauge model)
-from transformer.data import create_char_dataloaders
+# Import data loaders (reuse from gauge model)
+from transformer.data import create_char_dataloaders, create_dataloaders
 
 
 class StandardMetricsTracker:
@@ -622,11 +622,24 @@ def main():
     print("LOADING DATA")
     print("="*70)
 
-    train_loader, val_loader, actual_vocab_size = create_char_dataloaders(
-        batch_size=config['batch_size'],
-        max_seq_len=config['max_seq_len'],
-        num_workers=0,
-    )
+    # Use BPE tokenizer for vocab_size > 256, otherwise character-level
+    use_bpe = config.get('tokenizer', 'auto') == 'bpe' or config['vocab_size'] > 256
+
+    if use_bpe:
+        print(f"Using BPE tokenizer (vocab_size={config['vocab_size']})")
+        train_loader, val_loader, actual_vocab_size = create_dataloaders(
+            batch_size=config['batch_size'],
+            max_seq_len=config['max_seq_len'],
+            vocab_size=config['vocab_size'],
+            num_workers=0,
+        )
+    else:
+        print("Using character-level tokenizer")
+        train_loader, val_loader, actual_vocab_size = create_char_dataloaders(
+            batch_size=config['batch_size'],
+            max_seq_len=config['max_seq_len'],
+            num_workers=0,
+        )
 
     config['vocab_size'] = actual_vocab_size
     print(f"\nActual vocabulary size: {config['vocab_size']}")
