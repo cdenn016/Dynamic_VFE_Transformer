@@ -285,7 +285,7 @@ class MockMultiAgentSystem:
 
 def convert_torch_to_numpy_system(
     mu_q: torch.Tensor,      # (B, N, K)
-    sigma_q: torch.Tensor,   # (B, N, K, K)
+    sigma_q: torch.Tensor,   # (B, N, K, K) or (B, N, K) if diagonal
     mu_prior: torch.Tensor,  # (B, N, K)
     phi: torch.Tensor,       # (B, N, 3)
     generators: torch.Tensor,  # (3, K, K)
@@ -300,7 +300,7 @@ def convert_torch_to_numpy_system(
 
     Args:
         mu_q: Belief means (B, N, K)
-        sigma_q: Belief covariances (B, N, K, K)
+        sigma_q: Belief covariances (B, N, K, K) full or (B, N, K) diagonal
         mu_prior: Prior means (B, N, K)
         phi: Gauge frames (B, N, 3)
         generators: SO(3) generators (3, K, K)
@@ -313,10 +313,21 @@ def convert_torch_to_numpy_system(
     """
     # Extract single batch element and convert to numpy
     mu_q_np = mu_q[batch_idx].detach().cpu().numpy()  # (N, K)
-    sigma_q_np = sigma_q[batch_idx].detach().cpu().numpy()  # (N, K, K)
     mu_p_np = mu_prior[batch_idx].detach().cpu().numpy()  # (N, K)
     phi_np = phi[batch_idx].detach().cpu().numpy()  # (N, 3)
     gen_np = generators.detach().cpu().numpy()  # (3, K, K)
+
+    # Handle diagonal vs full covariance
+    if sigma_q.dim() == 3:
+        # Diagonal covariance: (B, N, K) -> expand to (N, K, K)
+        sigma_diag = sigma_q[batch_idx].detach().cpu().numpy()  # (N, K)
+        N, K = sigma_diag.shape
+        sigma_q_np = np.zeros((N, K, K), dtype=sigma_diag.dtype)
+        for i in range(N):
+            np.fill_diagonal(sigma_q_np[i], sigma_diag[i])
+    else:
+        # Full covariance: (B, N, K, K)
+        sigma_q_np = sigma_q[batch_idx].detach().cpu().numpy()  # (N, K, K)
 
     # Assume prior covariances same as beliefs (could be different)
     sigma_p_np = sigma_q_np.copy()
@@ -447,6 +458,9 @@ class VariationalFFNGradientEngine(nn.Module):
         batch_size, num_agents, K = mu.shape
         device = mu.device
 
+        # Detect diagonal covariance mode
+        is_diagonal_cov = sigma is not None and sigma.dim() == 3
+
         # Initialize covariances if not provided
         if sigma is None:
             # Use small isotropic covariances
@@ -575,7 +589,9 @@ class VariationalFFNGradientEngine(nn.Module):
 
             # Covariance update: Use validated SPD retraction
             # Σ_new = retract_spd(Σ, τ·ΔΣ)
-            if self.update_sigma:
+            # NOTE: Skip sigma update for diagonal covariance mode - gradient engine
+            # computes full covariance gradients which aren't compatible with diagonal mode
+            if self.update_sigma and not is_diagonal_cov:
                 # Convert learning rate to float (may be torch tensor)
                 lr_scalar = self.lr.item() if isinstance(self.lr, torch.Tensor) else float(self.lr)
 
@@ -602,10 +618,11 @@ class VariationalFFNGradientEngine(nn.Module):
         # Return updated parameters
         # CRITICAL: Detach from computation graph!
         # The natural gradients are already correct - don't let PyTorch backprop fight them
-        if self.update_sigma:
+        if self.update_sigma and not is_diagonal_cov:
             return mu_current.detach(), sigma_current.detach()
         else:
-            return mu_current.detach(), None
+            # Return original sigma for diagonal mode (no update) or if update_sigma=False
+            return mu_current.detach(), sigma.detach() if is_diagonal_cov else None
 
 
 # =============================================================================
