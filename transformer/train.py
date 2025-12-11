@@ -237,8 +237,11 @@ def compute_free_energy_loss(
     # =================================================================
     # Forward pass with attention weights and KL matrices
     # =================================================================
-    # Pass targets for E-step: beliefs minimize F including observations
-    logits, attn_info = model.forward_with_attention(token_ids, targets=targets)
+    # NOTE: Do NOT pass targets here! Passing targets allows VFE FFN to
+    # "cheat" by using targets to adjust beliefs before CE is computed,
+    # causing CE to collapse to 0. Targets should only be used for loss
+    # computation AFTER the forward pass.
+    logits, attn_info = model.forward_with_attention(token_ids, targets=None)
 
     beta = attn_info['beta']    # (B, n_heads, N, N)
     kl = attn_info['kl']        # (B, n_heads, N, N)
