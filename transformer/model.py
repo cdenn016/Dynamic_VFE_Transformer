@@ -305,8 +305,9 @@ class GaugeTransformerLM(nn.Module):
         # 2. Add Agent-Index Encoding to Gauge Frames
         # =================================================================
         # This distinguishes agent roles, NOT spatial positions
-        pos_phi = self.pos_encoding(num_agents, device=device)  # (N, 3)
-        phi = phi + pos_phi.unsqueeze(0)  # (B, N, 3)
+        # Use proper SO(3) composition (BCH formula) instead of simple addition
+        # to respect the Lie group structure: exp(φ + φ_pos) ≠ exp(φ)·exp(φ_pos)
+        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
 
         # =================================================================
         # 3. Attention Mask (causal + optional sparsity)
@@ -405,9 +406,8 @@ class GaugeTransformerLM(nn.Module):
         # Save initial embeddings as priors for variational FFN
         mu_prior = mu_q.clone()
 
-        # Position encoding
-        pos_phi = self.pos_encoding(num_agents, device=device)
-        phi = phi + pos_phi.unsqueeze(0)
+        # Position encoding (proper SO(3) composition)
+        phi = self.pos_encoding.compose(phi, num_agents, device=device)
 
         # Attention mask (causal + optional sparsity)
         mask = create_attention_mask(
