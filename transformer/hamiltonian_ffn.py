@@ -493,6 +493,67 @@ def symmetrize(M: torch.Tensor) -> torch.Tensor:
     return 0.5 * (M + M.transpose(-1, -2))
 
 
+def retract_to_principal_ball_torch(
+    phi: torch.Tensor,
+    margin: float = 1e-2,
+    mode: str = 'mod2pi',
+) -> torch.Tensor:
+    """
+    Retract gauge field to principal ball ||φ|| < π - margin (PyTorch version).
+
+    The axis-angle parameterization of SO(3) has:
+    - Redundancy: φ and φ + 2πn̂ represent the same rotation
+    - Singularity at ||φ|| = π (antipodal identification)
+
+    This function wraps φ back into the principal domain to prevent:
+    - Numerical instability near ||φ|| = π
+    - Unbounded drift during leapfrog integration
+    - Inconsistent transport operators
+
+    Args:
+        phi: Axis-angle field, shape (..., 3)
+        margin: Safety margin from branch cut at π
+        mode: 'mod2pi' (wrap with antipodal flip) or 'project' (radial clamp)
+
+    Returns:
+        phi_retracted: Shape (..., 3), satisfies ||φ|| < π - margin
+    """
+    eps = 1e-12
+    r_max = torch.pi - margin
+
+    # Compute norms
+    theta = torch.norm(phi, dim=-1, keepdim=True)  # (..., 1)
+    theta_safe = torch.clamp(theta, min=eps)
+
+    # Normalized axis (safe division)
+    axis = phi / theta_safe
+
+    if mode == 'mod2pi':
+        # Wrap to [0, 2π) with antipodal flip
+        two_pi = 2.0 * torch.pi
+        theta_wrapped = torch.remainder(theta, two_pi)
+
+        # Flip axis if θ > π (antipodal symmetry in SO(3))
+        flip = theta_wrapped > torch.pi
+        theta_final = torch.where(flip, two_pi - theta_wrapped, theta_wrapped)
+        axis_final = torch.where(flip, -axis, axis)
+
+        # Clamp to safety margin
+        theta_final = torch.clamp(theta_final, max=r_max)
+
+        phi_new = axis_final * theta_final
+
+    elif mode == 'project':
+        # Radial projection: only scale down if exceeds limit
+        scale = torch.clamp(r_max / theta_safe, max=1.0)
+        phi_new = phi * scale
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    return phi_new
+
+
 def ensure_spd(Sigma: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """
     Project matrix to SPD cone via eigenvalue clipping.
@@ -1146,9 +1207,12 @@ class LeapfrogIntegrator(nn.Module):
         else:
             Sigma_new = state.Sigma
 
-        # Gauge field update
+        # Gauge field update with retraction to principal ball
         if self.update_phi:
             phi_new = state.phi + dt * state.pi_phi
+            # CRITICAL: Retract to ||φ|| < π to prevent unbounded drift
+            # and numerical instability at the SO(3) coordinate singularity
+            phi_new = retract_to_principal_ball_torch(phi_new, margin=0.01, mode='mod2pi')
         else:
             phi_new = state.phi
 
@@ -1396,6 +1460,21 @@ class HamiltonianFFN(nn.Module):
     Gauge Covariance:
         The Hamiltonian H is gauge-invariant, so dynamics preserves covariance.
         Under g ∈ G: (μ, Σ, φ) → (g·μ, gΣgᵀ, Ad_g(φ))
+
+    GAUGE FRAME EVOLUTION (φ DYNAMICS):
+    ------------------------------------
+    The gauge frames φ only evolve if BOTH conditions are met:
+        1. update_phi=True (constructor parameter)
+        2. lambda_belief > 0 (belief alignment term in potential)
+
+    The potential V = α·KL(q||p) + λ·Σ_ij β_ij·KL(q_i||Ω_ij[q_j]) + CE has:
+        - KL(q||p): DOES NOT depend on φ (self-coupling term)
+        - KL(q_i||Ω_ij[q_j]): DEPENDS on φ through transport Ω_ij = exp(φ_i)·exp(-φ_j)
+        - CE: DOES NOT depend on φ (cross-entropy term)
+
+    Therefore, if lambda_belief=0, the gradient ∂V/∂φ = 0 and φ remains fixed
+    even when update_phi=True. This is intentional: gauge frames need belief
+    alignment to provide gradient signal for evolution.
     """
 
     def __init__(
@@ -1458,6 +1537,23 @@ class HamiltonianFFN(nn.Module):
         self.mass_config = mass_config or MassConfig()  # Default: prior precision only
         self.gamma = gamma
         self.temperature = temperature
+
+        # IMPORTANT: Auto-enable evolve_mass when evolve_phi=True
+        # The mass matrix M depends on φ through transported precisions:
+        #   Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T  where  Ω_{ik} = exp(φ_i)·exp(-φ_k)
+        # If φ evolves during leapfrog but M is held fixed, the symplectic
+        # structure is violated. For theoretical correctness, M should be
+        # recomputed when φ changes.
+        if update_phi and not evolve_mass:
+            import warnings
+            warnings.warn(
+                "update_phi=True but evolve_mass=False. The mass matrix M depends on φ "
+                "through transported precisions Λ̃_{qk} = Ω_{ik} Λ_{qk} Ω_{ik}^T. "
+                "Enabling evolve_mass=True for theoretical correctness.",
+                UserWarning
+            )
+            evolve_mass = True
+
         self.evolve_mass = evolve_mass
         self.eps = eps
         self.diagonal_covariance = diagonal_covariance

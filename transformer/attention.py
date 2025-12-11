@@ -1210,7 +1210,28 @@ class IrrepMultiHeadAttention(nn.Module):
         # Output projection (standard linear layer)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
+        # Count scalar (ℓ=0) vs non-scalar heads for gauge frame analysis
+        n_scalar_heads = sum(1 for d in self.irrep_dims if d == 1)
+        n_gauge_active_heads = self.n_heads - n_scalar_heads
+        scalar_channels = sum(d for d in self.irrep_dims if d == 1)
+
         print(f"IrrepMultiHeadAttention: {self.n_heads} heads, dims={self.irrep_dims}")
+
+        # Warn if a large fraction of channels are gauge-invariant
+        if n_scalar_heads > 0:
+            import warnings
+            scalar_fraction = scalar_channels / embed_dim
+            if scalar_fraction > 0.5:
+                warnings.warn(
+                    f"IrrepMultiHeadAttention: {n_scalar_heads}/{self.n_heads} heads are ℓ=0 (scalar), "
+                    f"comprising {scalar_channels}/{embed_dim} = {100*scalar_fraction:.1f}% of channels. "
+                    f"Scalar channels are GAUGE-INVARIANT: transport Ω_ij acts as identity, "
+                    f"so gauge frame evolution (update_phi=True) won't affect them. "
+                    f"Consider increasing non-scalar irreps (ℓ≥1) for gauge-sensitive representations.",
+                    UserWarning
+                )
+            print(f"  → {n_scalar_heads} scalar (ℓ=0) heads: GAUGE-INVARIANT (Ω=I)")
+            print(f"  → {n_gauge_active_heads} non-scalar heads: gauge-active (transport via Wigner D)")
 
     def forward(
         self,
