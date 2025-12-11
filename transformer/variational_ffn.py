@@ -155,19 +155,14 @@ def compute_vfe_gradients_gpu(
     # =================================================================
     # 2. Belief Alignment Gradient: ∂/∂μ_i [λ · Σ_j β_ij · KL(q_i || Ω_ij q_j)]
     # =================================================================
-    # This is the attention-weighted alignment term.
-    # For simplicity with diagonal covariance, we approximate:
-    #   KL(q_i || q_j) ≈ 0.5 * Σ_k [ (μ_i[k] - μ_j[k])² / σ_j[k] ]  (ignoring transport)
-    #   ∂KL/∂μ_i = (μ_i - μ_j) / σ_j
+    # Full gradient via product rule:
+    #   ∂/∂μ_i [Σ_j β_ij · KL_ij] = Σ_j β_ij · ∂KL_ij/∂μ_i + Σ_j KL_ij · ∂β_ij/∂μ_i
+    #                                  ↑ direct term           ↑ SOFTMAX COUPLING (nonlinearity!)
     #
-    # With transport Ω_ij, we'd need to transport μ_j first, but for diagonal
-    # covariance the transport effect is often small.
+    # The softmax coupling gradient is the KEY nonlinearity (replaces GELU/ReLU):
+    #   ∂β_ij/∂μ_i = β_ij · [∂KL_ij/∂μ_i - Σ_k β_ik · ∂KL_ik/∂μ_i] / κ
 
     if is_diagonal:
-        # Compute transported means: μ_j transported to frame i
-        # For diagonal mode, we use simplified transport (rotation of mean only)
-        # Full transport: μ_j_transported = Ω_ij @ μ_j where Ω_ij = exp(φ_i·G) @ exp(-φ_j·G)
-
         # Compute transport operators (vectorized)
         phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)  # (B, N, K, K)
         exp_phi = torch.matrix_exp(phi_matrix)       # (B, N, K, K)
@@ -181,26 +176,48 @@ def compute_vfe_gradients_gpu(
         mu_j_transported = torch.einsum('bijkl,bjl->bijk', Omega, mu_q)  # (B, N, N, K)
 
         # Difference: μ_i - μ_j_transported (for each pair i,j)
-        # mu_q: (B, N, K) -> expand to (B, N, 1, K) for broadcasting
         delta_mu_ij = mu_q.unsqueeze(2) - mu_j_transported  # (B, N, N, K)
 
-        # For diagonal covariance, use σ_j (not transported, simplification)
-        # sigma_q: (B, N, K) -> expand to (B, 1, N, K) for j dimension
+        # For diagonal covariance, use σ_j (transported would be better but costly)
         sigma_j = sigma_q.unsqueeze(1).clamp(min=eps)  # (B, 1, N, K)
 
-        # Gradient per pair: (μ_i - μ_j_transported) / σ_j
-        grad_per_pair = delta_mu_ij / sigma_j  # (B, N, N, K)
+        # ∂KL_ij/∂μ_i = (μ_i - μ_j_transported) / σ_j
+        grad_kl_per_pair = delta_mu_ij / sigma_j  # (B, N, N, K)
 
-        # Weight by attention β_ij and sum over j
-        # beta: (B, N, N), grad_per_pair: (B, N, N, K)
-        grad_mu_align = lambda_belief * torch.einsum('bij,bijk->bik', beta, grad_per_pair)  # (B, N, K)
+        # Compute KL values for softmax coupling term
+        # KL_ij ≈ 0.5 * Σ_k (μ_i - μ_j_transported)² / σ_j
+        kl_values = 0.5 * (delta_mu_ij ** 2 / sigma_j).sum(dim=-1)  # (B, N, N)
+
+        # =================================================================
+        # 2a. Direct term: Σ_j β_ij · ∂KL_ij/∂μ_i
+        # =================================================================
+        grad_mu_direct = lambda_belief * torch.einsum('bij,bijk->bik', beta, grad_kl_per_pair)
+
+        # =================================================================
+        # 2b. Softmax coupling term (THE NONLINEARITY!):
+        #     ∂β_ij/∂μ_i = β_ij · [∂KL_ij/∂μ_i - Σ_k β_ik · ∂KL_ik/∂μ_i] / κ
+        #     grad_softmax = Σ_j KL_ij · ∂β_ij/∂μ_i
+        # =================================================================
+        # Weighted average gradient: avg_grad_i = Σ_k β_ik · ∂KL_ik/∂μ_i
+        avg_grad = torch.einsum('bij,bijk->bik', beta, grad_kl_per_pair)  # (B, N, K)
+
+        # Deviation from average: ∂KL_ij/∂μ_i - avg_grad_i
+        # grad_kl_per_pair: (B, N, N, K), avg_grad: (B, N, K) -> expand to (B, N, 1, K)
+        grad_deviation = grad_kl_per_pair - avg_grad.unsqueeze(2)  # (B, N, N, K)
+
+        # Softmax coupling gradient: ∂β_ij/∂μ_i = β_ij · grad_deviation / κ
+        d_beta_d_mu = beta.unsqueeze(-1) * grad_deviation / kappa  # (B, N, N, K)
+
+        # Weight by KL values and sum: Σ_j KL_ij · ∂β_ij/∂μ_i
+        grad_mu_softmax = lambda_belief * torch.einsum('bij,bijk->bik', kl_values, d_beta_d_mu)
+
+        # Total alignment gradient (direct + softmax coupling)
+        grad_mu_align = grad_mu_direct + grad_mu_softmax
 
         # Sigma gradient from alignment (simplified for diagonal)
-        # This is a second-order effect, often small - skip for efficiency
         grad_sigma_align = torch.zeros_like(sigma_q)
     else:
         # Full covariance belief alignment
-        # More complex - transport both mean and covariance
         phi_matrix = torch.einsum('bna,aij->bnij', phi, generators)
         exp_phi = torch.matrix_exp(phi_matrix)
         exp_neg_phi = torch.matrix_exp(-phi_matrix)
@@ -220,13 +237,22 @@ def compute_vfe_gradients_gpu(
         sigma_j_reg = sigma_j_transported + eps * torch.eye(K, device=device, dtype=dtype)
         sigma_j_inv = torch.linalg.inv(sigma_j_reg)  # (B, N, N, K, K)
 
-        # Gradient per pair
-        grad_per_pair = torch.einsum('bijkl,bijl->bijk', sigma_j_inv, delta_mu_ij)
+        # ∂KL_ij/∂μ_i
+        grad_kl_per_pair = torch.einsum('bijkl,bijl->bijk', sigma_j_inv, delta_mu_ij)
 
-        # Weight by attention
-        grad_mu_align = lambda_belief * torch.einsum('bij,bijk->bik', beta, grad_per_pair)
+        # Compute KL values (Mahalanobis term only, ignoring trace/logdet)
+        kl_values = 0.5 * torch.einsum('bijk,bijk->bij', delta_mu_ij, grad_kl_per_pair)
 
-        # Sigma gradient (more complex, skip for now)
+        # Direct term
+        grad_mu_direct = lambda_belief * torch.einsum('bij,bijk->bik', beta, grad_kl_per_pair)
+
+        # Softmax coupling term
+        avg_grad = torch.einsum('bij,bijk->bik', beta, grad_kl_per_pair)
+        grad_deviation = grad_kl_per_pair - avg_grad.unsqueeze(2)
+        d_beta_d_mu = beta.unsqueeze(-1) * grad_deviation / kappa
+        grad_mu_softmax = lambda_belief * torch.einsum('bij,bijk->bik', kl_values, d_beta_d_mu)
+
+        grad_mu_align = grad_mu_direct + grad_mu_softmax
         grad_sigma_align = torch.zeros_like(sigma_q)
 
     # =================================================================
