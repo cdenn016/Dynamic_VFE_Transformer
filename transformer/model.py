@@ -17,6 +17,11 @@ Author: Implementation from plan.py
 Date: November 2025
 """
 
+# Suppress Triton warnings BEFORE torch import (torch may trigger triton import)
+import warnings
+warnings.filterwarnings("ignore", message="Failed to find cuobjdump", module="triton")
+warnings.filterwarnings("ignore", message="Failed to find nvdisasm", module="triton")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

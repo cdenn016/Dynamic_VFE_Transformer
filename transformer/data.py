@@ -23,6 +23,11 @@ Author: Implementation for gauge transformer
 Date: November 2025
 """
 
+# Suppress Triton warnings BEFORE torch import (torch may trigger triton import)
+import warnings
+warnings.filterwarnings("ignore", message="Failed to find cuobjdump", module="triton")
+warnings.filterwarnings("ignore", message="Failed to find nvdisasm", module="triton")
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Optional, Dict, List
@@ -36,17 +41,12 @@ import zipfile
 try:
     from datasets import load_dataset
     DATASETS_AVAILABLE = True
-except ImportError as e:
+except ImportError:
     DATASETS_AVAILABLE = False
     load_dataset = None  # Will use fallback
-    # Debug: show why import failed
-    import sys
-    print(f"[DEBUG] datasets import failed: {e}")
-    print(f"[DEBUG] Python executable: {sys.executable}")
-except Exception as e:
+except Exception:
     DATASETS_AVAILABLE = False
     load_dataset = None
-    print(f"[DEBUG] datasets import error: {type(e).__name__}: {e}")
 
 # Tiktoken (OpenAI's fast BPE tokenizer - preferred, no heavy dependencies)
 try:
@@ -60,14 +60,12 @@ except ImportError:
 try:
     from transformers import AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
-except ImportError as e:
+except ImportError:
     TRANSFORMERS_AVAILABLE = False
     AutoTokenizer = None
-    print(f"[DEBUG] transformers import failed: {e}")
-except Exception as e:
+except Exception:
     TRANSFORMERS_AVAILABLE = False
     AutoTokenizer = None
-    print(f"[DEBUG] transformers import error: {type(e).__name__}: {e}")
 
 # Legacy compatibility
 HF_AVAILABLE = DATASETS_AVAILABLE and TRANSFORMERS_AVAILABLE
