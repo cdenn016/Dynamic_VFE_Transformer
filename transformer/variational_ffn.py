@@ -178,15 +178,31 @@ def compute_vfe_gradients_gpu(
         # Difference: μ_i - μ_j_transported (for each pair i,j)
         delta_mu_ij = mu_q.unsqueeze(2) - mu_j_transported  # (B, N, N, K)
 
-        # For diagonal covariance, use σ_j (transported would be better but costly)
-        sigma_j = sigma_q.unsqueeze(1).clamp(min=eps)  # (B, 1, N, K)
+        # =================================================================
+        # PROPER COVARIANCE TRANSPORT: Σ_j_transported = Ω @ diag(σ_j) @ Ω^T
+        # =================================================================
+        # Even though input is diagonal, transported covariance is FULL!
+        # This is crucial for gauge equivariance.
 
-        # ∂KL_ij/∂μ_i = (μ_i - μ_j_transported) / σ_j
-        grad_kl_per_pair = delta_mu_ij / sigma_j  # (B, N, N, K)
+        # Expand diagonal to full: diag(σ_j) -> (B, N, K, K)
+        sigma_j_diag = torch.diag_embed(sigma_q.clamp(min=eps))  # (B, N, K, K)
 
-        # Compute KL values for softmax coupling term
-        # KL_ij ≈ 0.5 * Σ_k (μ_i - μ_j_transported)² / σ_j
-        kl_values = 0.5 * (delta_mu_ij ** 2 / sigma_j).sum(dim=-1)  # (B, N, N)
+        # Transport covariance: Σ_j_transported = Ω_ij @ Σ_j @ Ω_ij^T
+        sigma_j_transported = torch.einsum(
+            'bijkl,bjlm,bijmn->bijkn',
+            Omega, sigma_j_diag, Omega.transpose(-1, -2)
+        )  # (B, N, N, K, K)
+
+        # Regularize and invert transported covariance
+        sigma_j_reg = sigma_j_transported + eps * torch.eye(K, device=device, dtype=dtype)
+        sigma_j_inv = torch.linalg.inv(sigma_j_reg)  # (B, N, N, K, K)
+
+        # ∂KL_ij/∂μ_i = Σ_j_transported^{-1} @ (μ_i - μ_j_transported)
+        grad_kl_per_pair = torch.einsum('bijkl,bijl->bijk', sigma_j_inv, delta_mu_ij)  # (B, N, N, K)
+
+        # Compute KL values (Mahalanobis distance with transported covariance)
+        # KL_ij = 0.5 * δμ^T @ Σ_j_transported^{-1} @ δμ
+        kl_values = 0.5 * torch.einsum('bijk,bijk->bij', delta_mu_ij, grad_kl_per_pair)  # (B, N, N)
 
         # =================================================================
         # 2a. Direct term: Σ_j β_ij · ∂KL_ij/∂μ_i
