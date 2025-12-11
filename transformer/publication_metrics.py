@@ -1357,7 +1357,7 @@ class PublicationMetrics:
             'base_dir': str(self.base_dir),
         }
 
-        print(f"📊 Publication metrics initialized: {self.experiment_dir}")
+        print(f"[INFO] Publication metrics initialized: {self.experiment_dir}")
 
     def record_training_step(
         self,
@@ -1400,7 +1400,7 @@ class PublicationMetrics:
         with open(self.experiment_dir / 'metadata.json', 'w') as f:
             json.dump(self.metadata, f, indent=2)
 
-        print(f"💾 All metrics saved to {self.experiment_dir}")
+        print(f"[INFO] All metrics saved to {self.experiment_dir}")
 
     def generate_all_figures(self, dt_scaling_results: Optional[Dict] = None):
         """Generate all publication figures."""
@@ -1457,13 +1457,13 @@ class PublicationMetrics:
 
         # Summary output
         if figures_generated:
-            print(f"📈 Figures generated ({len(figures_generated)}): {', '.join(figures_generated)}")
+            print(f"[INFO] Figures generated ({len(figures_generated)}): {', '.join(figures_generated)}")
             print(f"   Saved to: {self.experiment_dir}/figures/")
         else:
-            print("⚠️ No figures were generated (no data recorded)")
+            print("[WARNING] No figures were generated (no data recorded)")
 
         if figures_skipped:
-            print(f"⚠️ Figures skipped ({len(figures_skipped)}): {', '.join(figures_skipped)}")
+            print(f"[WARNING] Figures skipped ({len(figures_skipped)}): {', '.join(figures_skipped)}")
 
     def generate_interpretability_outputs(
         self,
@@ -1518,9 +1518,9 @@ class PublicationMetrics:
                         save_name=f"{self.experiment_name}_attention"
                     )
 
-                print(f"🔍 Interpretability outputs saved to {self.interpretability.save_dir}/")
+                print(f"[INFO] Interpretability outputs saved to {self.interpretability.save_dir}/")
             else:
-                print("⚠ Model doesn't support forward_with_attention, skipping interpretability")
+                print("[WARNING] Model doesn't support forward_with_attention, skipping interpretability")
 
     def _plot_attention_heatmap(
         self,
@@ -1697,7 +1697,7 @@ class PublicationMetrics:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
         fig.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
 
-        print(f"📈 Trajectory figure saved to {save_path}")
+        print(f"[INFO] Trajectory figure saved to {save_path}")
         return fig
 
     def _plot_trajectory_energy(self, ax: plt.Axes, trajectory, title: str):
@@ -1780,7 +1780,7 @@ class PublicationMetrics:
         # Training summary
         train_summary = self.training.get_summary()
         if train_summary:
-            print("\n📈 Training:")
+            print("\n[INFO] Training:")
             print(f"   Steps: {train_summary.get('total_steps', 0)}")
             print(f"   Final Train BPC: {train_summary.get('final_train_bpc', 0):.4f}")
             print(f"   Best Val BPC: {train_summary.get('best_val_ppl', 'N/A')}")

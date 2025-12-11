@@ -372,6 +372,15 @@ def compute_free_energy_loss(
     # =================================================================
     total_loss = ce_loss + belief_align_loss + self_consistency_loss + model_align_loss
 
+    # Compute attention entropy: -Σ β_ij log(β_ij) per query position
+    # Average over heads first
+    beta_avg = beta.mean(dim=1)  # (B, N, N) - average over heads
+    beta_safe = beta_avg.clamp(min=1e-10)  # Numerical stability
+    attn_entropy = -(beta_safe * beta_safe.log()).sum(dim=-1).mean()  # Mean over (B, N)
+
+    # Attention concentration (max attention weight)
+    attn_concentration = beta_avg.max(dim=-1)[0].mean()
+
     # Metrics
     metrics = {
         'loss/total': total_loss.item(),
@@ -381,6 +390,8 @@ def compute_free_energy_loss(
         'loss/model_align': model_align_loss.item() if lambda_gamma > 0 else 0.0,
         'attention/beta_mean': beta.mean().item(),
         'attention/kl_mean': kl.mean().item(),
+        'attention/entropy': attn_entropy.item(),  # How diffuse is attention?
+        'attention/concentration': attn_concentration.item(),  # How peaked is attention?
     }
 
     if lambda_gamma > 0.0:
