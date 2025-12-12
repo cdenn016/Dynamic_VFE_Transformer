@@ -314,31 +314,28 @@ class GaugeTransformerLM(nn.Module):
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
         # =================================================================
-        # 2. Save Priors BEFORE adding position (position-independent semantics)
+        # 2. Save Priors (position-independent semantics)
         # =================================================================
         # Priors represent "expected meaning of token" - independent of position.
         # This is the correct VFE setup: prior = semantic, belief = contextualized.
         mu_prior = mu_q.clone()
 
         # =================================================================
-        # 3. Add Position Encoding to φ (Gauge Frame) - RELATIVE POSITION
+        # 3. NO POSITION ENCODING - Testing semantic-only attention
         # =================================================================
-        # Position is encoded in gauge frame, giving RELATIVE position awareness:
-        # - φ_i = φ_token + φ_pos(i)
-        # - Transport Ω_ij = exp(φ_i·G)·exp(-φ_j·G) encodes relative position
-        # - KL(q_i || Ω_ij[q_j]) depends on relative position, not absolute
+        # EXPERIMENT: Remove ALL position encoding to test if KL-based attention
+        # can work purely on semantic content. The causal mask still provides
+        # implicit position information (position i only sees tokens 0..i).
         #
-        # This is shift-invariant: tokens 3 apart always have same transport.
-        # Uses proper SO(3) composition (BCH formula) to respect Lie structure.
-        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
+        # If attention patterns become content-based (not distance-dependent),
+        # this confirms position encoding was causing the diagonal bias.
+        #
+        # To re-enable position encoding, uncomment:
+        # phi = self.pos_encoding.compose(phi, num_agents, device=device)
 
         # Record embeddings for trajectory tracking
         if recorder is not None and recorder.enabled:
             recorder.record_embeddings(mu_q, sigma_q, phi)
-
-        # NOTE: μ is NOT modified by position encoding.
-        # Position information flows through transport Ω_ij, not through μ.
-        # This ensures attention depends on relative position, not absolute.
 
         # =================================================================
         # 4. Attention Mask (causal + optional sparsity)
@@ -434,16 +431,11 @@ class GaugeTransformerLM(nn.Module):
         # Embeddings
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
-        # Save priors BEFORE adding position (position-independent semantics)
+        # Save priors (position-independent semantics)
         mu_prior = mu_q.clone()
 
-        # Add position encoding to φ (gauge frame) - RELATIVE POSITION
-        # Position is encoded in gauge frame, giving relative position awareness:
-        # - φ_i = φ_token + φ_pos(i)
-        # - Transport Ω_ij encodes relative position, not absolute
-        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
-
-        # NOTE: μ is NOT modified - position flows through transport Ω_ij
+        # NO POSITION ENCODING - Testing semantic-only attention
+        # To re-enable: phi = self.pos_encoding.compose(phi, num_agents, device=device)
 
         # Attention mask (causal + optional sparsity)
         mask = create_attention_mask(
