@@ -76,11 +76,18 @@ class GaugeTransformerBlock(nn.Module):
         evolve_phi: bool = False,
         # Variational FFN parameters
         generators: Optional[torch.Tensor] = None,  # (3, K, K)
-        ffn_mode: str = 'learned',  # 'learned', 'standard', 'VFE', 'VFE_dynamic', 'variational_*', 'hamiltonian'
+        ffn_mode: str = 'learned',  # 'learned', 'standard', 'VFE', 'VFE_dynamic', 'VFE_dynamic_stable', 'variational_*', 'hamiltonian'
         ffn_alpha: float = 0.001,
         # Dynamic VFE specific parameters
         ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
+        # Stabilized dynamic VFE parameters
+        ffn_vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
+        ffn_vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        ffn_vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
+        ffn_vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
+        ffn_vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
+        ffn_vfe_grad_clip: float = 10.0,         # Per-component gradient clip
         ffn_tau_eff: float = 1.0,
         ffn_kappa: float = 1.0,
         ffn_n_iterations: int = 1,
@@ -190,6 +197,13 @@ class GaugeTransformerBlock(nn.Module):
             # Dynamic VFE parameters (attention-belief co-evolution)
             vfe_dynamic_m_step_interval=ffn_vfe_dynamic_m_step_interval,
             vfe_dynamic_m_step_rate=ffn_vfe_dynamic_m_step_rate,
+            # Stabilized dynamic VFE parameters
+            vfe_kappa_start=ffn_vfe_kappa_start,
+            vfe_balance_gradients=ffn_vfe_balance_gradients,
+            vfe_obs_grad_weight=ffn_vfe_obs_grad_weight,
+            vfe_entropy_penalty=ffn_vfe_entropy_penalty,
+            vfe_self_attn_damping=ffn_vfe_self_attn_damping,
+            vfe_grad_clip=ffn_vfe_grad_clip,
             # Hamiltonian parameters
             hamiltonian_dt=ffn_hamiltonian_dt,
             hamiltonian_n_steps=ffn_hamiltonian_n_steps,
@@ -267,7 +281,7 @@ class GaugeTransformerBlock(nn.Module):
         # Capture beta if needed for variational/hamiltonian FFN or trajectory recording
         recorder = get_global_recorder() if TRAJECTORY_TRACKING_AVAILABLE else None
         recording_attention = recorder is not None and recorder.enabled and recorder.record_attention
-        need_beta = self.ffn_mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'hamiltonian']
+        need_beta = self.ffn_mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'VFE_dynamic_stable', 'hamiltonian']
         need_attention_output = need_beta or recording_attention
 
         mu_attn, sigma_attn, beta, kl_matrix = self.attention(
@@ -372,6 +386,27 @@ class GaugeTransformerBlock(nn.Module):
             # Update covariances from FFN if evolving
             if self.evolve_sigma and sigma_ffn is not None:
                 sigma_q = sigma_ffn
+
+        elif self.ffn_mode == 'VFE_dynamic_stable':
+            # Stabilized dynamic-β VFE mode with temperature annealing (RECOMMENDED!)
+            # Same interface as VFE_dynamic but more stable training
+            if mu_prior is None:
+                raise ValueError(f"FFN mode '{self.ffn_mode}' requires mu_prior argument")
+
+            mu_ffn, sigma_ffn = self.ffn(
+                mu=mu_normalized,
+                beta=beta,          # Initial β
+                mu_prior=mu_prior,  # From embeddings
+                phi=phi,            # Current gauge frames
+                sigma=sigma_q,      # Current covariances
+                mask=mask,          # Causal mask
+                targets=targets,    # Target tokens
+                W_out=W_out,        # Output projection
+            )
+
+            # Update covariances from FFN if evolving
+            if self.evolve_sigma and sigma_ffn is not None:
+                sigma_q = sigma_ffn
         else:
             # Legacy variational FFN modes (mu only)
             if mu_prior is None:
@@ -461,6 +496,13 @@ class GaugeTransformerStack(nn.Module):
         # Dynamic VFE specific parameters
         ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
+        # Stabilized dynamic VFE parameters
+        ffn_vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
+        ffn_vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        ffn_vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
+        ffn_vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
+        ffn_vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
+        ffn_vfe_grad_clip: float = 10.0,         # Per-component gradient clip
         # Hamiltonian specific
         ffn_hamiltonian_dt: float = 0.01,
         ffn_hamiltonian_n_steps: int = 10,
@@ -543,6 +585,13 @@ class GaugeTransformerStack(nn.Module):
                 # Dynamic VFE
                 ffn_vfe_dynamic_m_step_interval=ffn_vfe_dynamic_m_step_interval,
                 ffn_vfe_dynamic_m_step_rate=ffn_vfe_dynamic_m_step_rate,
+                # Stabilized dynamic VFE
+                ffn_vfe_kappa_start=ffn_vfe_kappa_start,
+                ffn_vfe_balance_gradients=ffn_vfe_balance_gradients,
+                ffn_vfe_obs_grad_weight=ffn_vfe_obs_grad_weight,
+                ffn_vfe_entropy_penalty=ffn_vfe_entropy_penalty,
+                ffn_vfe_self_attn_damping=ffn_vfe_self_attn_damping,
+                ffn_vfe_grad_clip=ffn_vfe_grad_clip,
                 # Hamiltonian
                 ffn_hamiltonian_dt=ffn_hamiltonian_dt,
                 ffn_hamiltonian_n_steps=ffn_hamiltonian_n_steps,
