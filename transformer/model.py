@@ -17,10 +17,11 @@ Author: Implementation from plan.py
 Date: November 2025
 """
 
-# Suppress Triton warnings BEFORE torch import (torch may trigger triton import)
+# Suppress noisy warnings BEFORE torch import (torch may trigger imports)
 import warnings
 warnings.filterwarnings("ignore", message="Failed to find cuobjdump", module="triton")
 warnings.filterwarnings("ignore", message="Failed to find nvdisasm", module="triton")
+warnings.filterwarnings("ignore", message="CUDA path could not be detected", module="cupy")
 
 import torch
 import torch.nn as nn
