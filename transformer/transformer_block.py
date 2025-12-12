@@ -76,8 +76,11 @@ class GaugeTransformerBlock(nn.Module):
         evolve_phi: bool = False,
         # Variational FFN parameters
         generators: Optional[torch.Tensor] = None,  # (3, K, K)
-        ffn_mode: str = 'learned',  # 'learned', 'standard', 'VFE', 'variational_*', 'hamiltonian'
+        ffn_mode: str = 'learned',  # 'learned', 'standard', 'VFE', 'VFE_dynamic', 'variational_*', 'hamiltonian'
         ffn_alpha: float = 0.001,
+        # Dynamic VFE specific parameters
+        ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
+        ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
         ffn_tau_eff: float = 1.0,
         ffn_kappa: float = 1.0,
         ffn_n_iterations: int = 1,
@@ -184,6 +187,9 @@ class GaugeTransformerBlock(nn.Module):
             lambda_prior=ffn_lambda_prior,
             lambda_phi=ffn_lambda_phi,
             update_sigma=ffn_update_sigma,
+            # Dynamic VFE parameters (attention-belief co-evolution)
+            vfe_dynamic_m_step_interval=ffn_vfe_dynamic_m_step_interval,
+            vfe_dynamic_m_step_rate=ffn_vfe_dynamic_m_step_rate,
             # Hamiltonian parameters
             hamiltonian_dt=ffn_hamiltonian_dt,
             hamiltonian_n_steps=ffn_hamiltonian_n_steps,
@@ -261,7 +267,7 @@ class GaugeTransformerBlock(nn.Module):
         # Capture beta if needed for variational/hamiltonian FFN or trajectory recording
         recorder = get_global_recorder() if TRAJECTORY_TRACKING_AVAILABLE else None
         recording_attention = recorder is not None and recorder.enabled and recorder.record_attention
-        need_beta = self.ffn_mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'hamiltonian']
+        need_beta = self.ffn_mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'hamiltonian']
         need_attention_output = need_beta or recording_attention
 
         mu_attn, sigma_attn, beta, kl_matrix = self.attention(
@@ -334,6 +340,27 @@ class GaugeTransformerBlock(nn.Module):
             mu_ffn, sigma_ffn = self.ffn(
                 mu=mu_normalized,
                 beta=beta,          # From attention
+                mu_prior=mu_prior,  # From embeddings
+                phi=phi,            # Current gauge frames
+                sigma=sigma_q,      # Current covariances
+                mask=mask,          # Causal mask
+                targets=targets,    # Target tokens (discrete observations!)
+                W_out=W_out,        # Output projection for ∂CE/∂μ
+            )
+
+            # Update covariances from FFN if evolving
+            if self.evolve_sigma and sigma_ffn is not None:
+                sigma_q = sigma_ffn
+
+        elif self.ffn_mode == 'VFE_dynamic':
+            # Dynamic-β VFE mode: β recomputed at each VFE step
+            # Returns (mu, sigma) tuple like gradient_engine
+            if mu_prior is None:
+                raise ValueError(f"FFN mode '{self.ffn_mode}' requires mu_prior argument")
+
+            mu_ffn, sigma_ffn = self.ffn(
+                mu=mu_normalized,
+                beta=beta,          # Initial β (will be recomputed each step inside FFN)
                 mu_prior=mu_prior,  # From embeddings
                 phi=phi,            # Current gauge frames
                 sigma=sigma_q,      # Current covariances
@@ -431,6 +458,9 @@ class GaugeTransformerStack(nn.Module):
         ffn_lambda_prior: float = 0.0,
         ffn_lambda_phi: float = 0.0,
         ffn_update_sigma: bool = True,
+        # Dynamic VFE specific parameters
+        ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
+        ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
         # Hamiltonian specific
         ffn_hamiltonian_dt: float = 0.01,
         ffn_hamiltonian_n_steps: int = 10,
@@ -461,7 +491,7 @@ class GaugeTransformerStack(nn.Module):
             evolve_sigma: If True, covariances evolve through layers
             evolve_phi: If True, gauge frames evolve through layers
             generators: SO(3) generators (for variational/hamiltonian FFN)
-            ffn_mode: 'learned'/'standard', 'VFE'/'variational_gradient_engine', 'hamiltonian'
+            ffn_mode: 'learned'/'standard', 'VFE'/'variational_gradient_engine', 'VFE_dynamic', 'hamiltonian'
             ffn_alpha: Prior weight (variational/hamiltonian)
             ffn_tau_eff: Temperature (variational)
             ffn_kappa: Softmax temperature (variational_full/hamiltonian)
@@ -471,6 +501,8 @@ class GaugeTransformerStack(nn.Module):
             ffn_lambda_prior: Prior alignment weight (gradient_engine)
             ffn_lambda_phi: Gauge field weight (gradient_engine)
             ffn_update_sigma: Update covariances in FFN? (gradient_engine/hamiltonian)
+            ffn_vfe_dynamic_m_step_interval: M-step every N iterations (VFE_dynamic, 0=disabled)
+            ffn_vfe_dynamic_m_step_rate: Prior update rate in M-step (VFE_dynamic)
             ffn_hamiltonian_dt: Leapfrog time step (hamiltonian)
             ffn_hamiltonian_n_steps: Number of leapfrog steps (hamiltonian)
             ffn_hamiltonian_momentum_scale: Initial momentum scale (hamiltonian)
@@ -508,6 +540,9 @@ class GaugeTransformerStack(nn.Module):
                 ffn_lambda_prior=ffn_lambda_prior,
                 ffn_lambda_phi=ffn_lambda_phi,
                 ffn_update_sigma=ffn_update_sigma,
+                # Dynamic VFE
+                ffn_vfe_dynamic_m_step_interval=ffn_vfe_dynamic_m_step_interval,
+                ffn_vfe_dynamic_m_step_rate=ffn_vfe_dynamic_m_step_rate,
                 # Hamiltonian
                 ffn_hamiltonian_dt=ffn_hamiltonian_dt,
                 ffn_hamiltonian_n_steps=ffn_hamiltonian_n_steps,

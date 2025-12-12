@@ -67,6 +67,9 @@ from agent.agents import Agent
 from geometry.geometry_base import BaseManifold, TopologyType
 from gradients.retraction import retract_spd  # For SPD manifold updates
 
+# Import attention computation for dynamic β
+from transformer.attention import compute_attention_weights
+
 
 # =============================================================================
 # GPU-Based Gradient Computation (PyTorch - FAST!)
@@ -958,6 +961,260 @@ class VariationalFFNGradientEngine(nn.Module):
         else:
             # Return original sigma for diagonal mode (no update) or if update_sigma=False
             return mu_current.detach(), sigma.detach() if is_diagonal_cov else None
+
+
+# =============================================================================
+# Dynamic-β VFE: Full Active Inference with Evolving Attention (RECOMMENDED!)
+# =============================================================================
+
+class VariationalFFNDynamic(nn.Module):
+    """
+    Dynamic-β Variational FFN: Recomputes attention at each VFE step.
+
+    This is the theoretically correct implementation where beliefs and attention
+    co-evolve. At each integration step:
+
+        1. Compute β from current beliefs: β_ij = softmax(-KL(q_i||Ω_ij[q_j])/κ)
+        2. Compute full VFE gradient: ∂F/∂θ (includes ∂β/∂θ nonlinearity)
+        3. Update beliefs via natural gradient descent
+        4. (Optional) M-step: update priors toward beliefs
+        5. Repeat
+
+    Key difference from VariationalFFNGradientEngine:
+        - GradientEngine: β computed once, held fixed during descent
+        - Dynamic: β recomputed at each step → attention-belief co-evolution
+
+    This enables emergent block structure in β as beliefs cluster.
+
+    The ∂β/∂μ term is the principled nonlinearity (replaces GELU):
+        ∂β_ij/∂μ_i = β_ij · [∂KL_ij/∂μ_i - Σ_k β_ik · ∂KL_ik/∂μ_i] / κ
+
+    With dynamic β, this creates positive feedback:
+        - Tokens with similar beliefs → higher β between them
+        - Higher β → beliefs pulled closer together
+        - → Cluster formation (meta-agents!)
+
+    Complexity: O(n_steps × N² × K) - more expensive but theoretically sound
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        generators: torch.Tensor,  # (3, K, K) SO(3) generators
+        alpha: float = 0.01,       # Self-coupling weight (KL(q||p))
+        lambda_belief: float = 1.0,  # Belief alignment weight
+        kappa: float = 1.0,        # Attention temperature
+        n_iterations: int = 10,    # VFE descent steps (more steps = deeper equilibration)
+        learnable_lr: bool = True, # Learn step size?
+        update_sigma: bool = True, # Update covariances?
+        m_step_interval: int = 0,  # M-step every N steps (0 = no M-step)
+        m_step_rate: float = 0.01, # Prior update rate toward beliefs
+        diagonal_covariance: bool = False,  # Use diagonal Σ for efficiency
+    ):
+        """
+        Initialize dynamic-β VFE FFN.
+
+        Args:
+            embed_dim: K - dimension of belief vectors
+            generators: SO(3) generators for gauge transport (3, K, K)
+            alpha: Weight for KL(q||p) self-coupling (prior anchoring)
+            lambda_belief: Weight for belief alignment term Σ β_ij KL(q_i||q_j)
+            kappa: Temperature for attention softmax (higher = softer)
+            n_iterations: Number of VFE descent iterations per forward pass
+            learnable_lr: If True, step size η is a learnable parameter
+            update_sigma: If True, also update covariance matrices Σ
+            m_step_interval: Run M-step every N iterations (0 = disabled)
+            m_step_rate: How fast priors move toward beliefs in M-step
+            diagonal_covariance: Use diagonal Σ for O(K) instead of O(K²)
+        """
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.register_buffer('generators', generators)
+        self.n_iterations = n_iterations
+        self.update_sigma = update_sigma
+        self.diagonal_covariance = diagonal_covariance
+
+        # VFE hyperparameters
+        self.alpha = alpha
+        self.lambda_belief = lambda_belief
+        self.kappa = kappa
+
+        # M-step configuration
+        self.m_step_interval = m_step_interval
+        self.m_step_rate = m_step_rate
+
+        # Learnable step size
+        if learnable_lr:
+            self.lr = nn.Parameter(torch.tensor(0.1))
+        else:
+            self.register_buffer('lr', torch.tensor(0.1))
+
+    def forward(
+        self,
+        mu: torch.Tensor,          # (B, N, K) - current beliefs
+        beta: torch.Tensor,        # (B, n_heads, N, N) - INITIAL attention (will be recomputed)
+        mu_prior: torch.Tensor,    # (B, N, K) - embedding priors
+        phi: torch.Tensor,         # (B, N, 3) - gauge frames
+        sigma: Optional[torch.Tensor] = None,  # (B, N, K, K) or (B, N, K) if diagonal
+        mask: Optional[torch.Tensor] = None,   # (B, N, N) - causal mask
+        targets: Optional[torch.Tensor] = None,  # (B, N) - target token IDs
+        W_out: Optional[torch.Tensor] = None,    # (V, K) - output projection
+        return_beta_history: bool = False,  # Return β evolution for analysis
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[list]]:
+        """
+        Dynamic VFE descent with β recomputation at each step.
+
+        Flow at each iteration:
+            1. β = softmax(-KL(q||Ω[q])/κ)  [RECOMPUTE from current beliefs]
+            2. ∂F/∂μ = α(μ-μ_p)/σ_p + λΣβ(∂KL/∂μ) + Σ KL(∂β/∂μ) + ∂CE/∂μ
+            3. μ ← μ - η·F⁻¹·∂F/∂μ  [Natural gradient descent]
+            4. (Optional) σ ← retract_spd(σ, -η·∂F/∂σ)
+            5. (Optional M-step) μ_p ← μ_p + rate·(μ - μ_p)
+
+        Args:
+            mu: Current belief means (B, N, K)
+            beta: Initial attention weights (B, n_heads, N, N) - used only for first step
+            mu_prior: Prior means from embeddings (B, N, K)
+            phi: Gauge frames (B, N, 3)
+            sigma: Belief covariances - (B, N, K, K) full or (B, N, K) diagonal
+            mask: Causal mask (B, N, N) where 0 = cannot attend
+            targets: Target tokens for observation term (B, N)
+            W_out: Output projection for ∂CE/∂μ computation
+            return_beta_history: If True, return list of β at each step
+
+        Returns:
+            mu_new: Updated beliefs (B, N, K)
+            sigma_new: Updated covariances (same shape as input) or None
+            beta_history: List of β tensors if return_beta_history, else None
+        """
+        B, N, K = mu.shape
+        device = mu.device
+        dtype = mu.dtype
+        eps = 1e-6
+
+        # Initialize sigma if not provided
+        if sigma is None:
+            if self.diagonal_covariance:
+                sigma = torch.ones(B, N, K, device=device, dtype=dtype) * 0.1
+            else:
+                sigma = 0.1 * torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1).clone()
+
+        is_diagonal = sigma.dim() == 3
+
+        # Initialize sigma_p (prior covariance) - same as sigma for simplicity
+        sigma_p = sigma.clone()
+
+        # Current state (will evolve)
+        mu_current = mu.clone()
+        sigma_current = sigma.clone()
+        mu_p_current = mu_prior.clone()
+
+        # Track β evolution if requested
+        beta_history = [] if return_beta_history else None
+
+        # Compute discrete observation gradient once (frozen during E-step)
+        discrete_obs_grad = None
+        if targets is not None and W_out is not None:
+            with torch.no_grad():
+                logits = torch.matmul(mu_current, W_out.T)
+                probs = F.softmax(logits, dim=-1)
+                targets_valid = targets.clone()
+                targets_valid[targets == -1] = 0
+                one_hot = F.one_hot(targets_valid, num_classes=W_out.shape[0]).float()
+                mask_obs = (targets != -1).unsqueeze(-1).float()
+                one_hot = one_hot * mask_obs
+                grad_error = (probs - one_hot) * mask_obs
+                discrete_obs_grad = torch.matmul(grad_error, W_out)
+
+        # =====================================================================
+        # VFE Descent Loop with Dynamic β
+        # =====================================================================
+        for iteration in range(self.n_iterations):
+            # =================================================================
+            # STEP 1: Recompute attention β from current beliefs
+            # =================================================================
+            # β_ij = softmax(-KL(q_i || Ω_ij[q_j]) / κ)
+            beta_current = compute_attention_weights(
+                mu_q=mu_current,
+                sigma_q=sigma_current,
+                phi=phi,
+                generators=self.generators,
+                kappa=self.kappa,
+                epsilon=eps,
+                mask=mask,
+                use_numba=False,  # Always use PyTorch for GPU
+                return_kl=False,
+                diagonal_covariance=is_diagonal,
+            )  # (B, N, N)
+
+            if return_beta_history:
+                beta_history.append(beta_current.detach().clone())
+
+            # =================================================================
+            # STEP 2: Compute VFE gradients with current β
+            # =================================================================
+            grad_mu, grad_sigma = compute_vfe_gradients_gpu(
+                mu_q=mu_current,
+                sigma_q=sigma_current,
+                mu_p=mu_p_current,
+                sigma_p=sigma_p,
+                beta=beta_current,  # USE RECOMPUTED β!
+                phi=phi,
+                generators=self.generators,
+                alpha=self.alpha,
+                lambda_belief=self.lambda_belief,
+                kappa=self.kappa,
+                eps=eps,
+            )
+
+            # Add observation gradient if provided
+            if discrete_obs_grad is not None:
+                grad_mu = grad_mu + discrete_obs_grad
+
+            # Clip for stability
+            grad_mu = torch.clamp(grad_mu, min=-1e3, max=1e3)
+            grad_sigma = torch.clamp(grad_sigma, min=-1e3, max=1e3)
+
+            # =================================================================
+            # STEP 3: Natural gradient projection
+            # =================================================================
+            nat_grad_mu, nat_grad_sigma = compute_natural_gradient_gpu(
+                grad_mu, grad_sigma, sigma_current, eps=eps
+            )
+
+            # =================================================================
+            # STEP 4: Update beliefs (E-step)
+            # =================================================================
+            mu_current = mu_current - self.lr * nat_grad_mu
+
+            if self.update_sigma:
+                if is_diagonal:
+                    sigma_current = (sigma_current - self.lr * nat_grad_sigma).clamp(min=eps)
+                else:
+                    sigma_current = sigma_current - self.lr * nat_grad_sigma
+                    sigma_current = 0.5 * (sigma_current + sigma_current.transpose(-1, -2))
+                    sigma_current = sigma_current + eps * torch.eye(K, device=device, dtype=dtype)
+
+            # =================================================================
+            # STEP 5: Optional M-step (prior update)
+            # =================================================================
+            if self.m_step_interval > 0 and (iteration + 1) % self.m_step_interval == 0:
+                # Move priors toward beliefs
+                mu_p_current = mu_p_current + self.m_step_rate * (mu_current.detach() - mu_p_current)
+
+        # Return results
+        if self.update_sigma:
+            return mu_current.detach(), sigma_current.detach(), beta_history
+        else:
+            return mu_current.detach(), None, beta_history
+
+    def extra_repr(self) -> str:
+        return (
+            f"embed_dim={self.embed_dim}, n_iterations={self.n_iterations}, "
+            f"alpha={self.alpha}, lambda_belief={self.lambda_belief}, kappa={self.kappa}, "
+            f"m_step_interval={self.m_step_interval}"
+        )
 
 
 # =============================================================================
