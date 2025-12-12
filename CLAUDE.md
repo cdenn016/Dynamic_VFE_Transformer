@@ -181,31 +181,43 @@ import sys
 
 Training shapes the prior landscape. The forward pass evolves beliefs through that landscape.
 
-### Position Encoding: μ not φ (Principled Design)
+### Position Encoding: φ (Gauge Frame) for RELATIVE Position
 
-**Critical**: Position is encoded in μ (belief mean), NOT in φ (gauge frame).
+**Critical**: Position is encoded in φ (gauge frame), giving **relative position** awareness through transport.
 
 | Component | Encodes | Type |
 |-----------|---------|------|
-| φ (gauge frame) | Token identity/type | Internal symmetry |
-| μ (belief mean) | Content + position | External information |
-| Ω (transport) | Frame relationships | Internal geometry |
+| φ (gauge frame) | Token type + position | Frame at each position |
+| μ (belief mean) | Pure semantic content | Position-independent |
+| Ω (transport) | **Relative position** | How to compare across positions |
 
 **Why this matters**:
 
-In gauge theory, φ represents **internal** degrees of freedom (how an agent "sees" the belief space). Position is **external** context (where in the sequence). Mixing position into φ conflates internal and external structure.
+Position encoding in φ gives **shift-invariant attention**: tokens 3 apart always have the same transport relationship, regardless of absolute position. This is because:
 
-**Gauge equivalence**: Same token at different positions should be gauge-equivalent:
-- Same φ (same token type) → same SO(3) orbit
-- Different μ (due to position encoding) → different beliefs
-- KL(q_i || Ω_ij · q_j) depends on belief content, not position
+```
+φ_i = φ_token + φ_pos(i)
+Ω_ij = exp(φ_i·G)·exp(-φ_j·G)  ← encodes relative position (i-j)
+```
 
-**The old bug**: Position encoding was added to φ, but priors were computed before position was added. This created a mismatch:
-- Priors used φ_embed
-- Transport used φ_embed + φ_pos
-- Gauge equivalence was broken even for same-token beliefs
+**Relative vs Absolute Position**:
 
-**The fix**: Position encoding now goes to μ (like standard transformers). Transport Ω_ij depends only on token type, preserving gauge equivalence.
+| Approach | Position in | KL depends on | Shift-invariant? |
+|----------|-------------|---------------|------------------|
+| Position in μ | μ = semantic + pos | Absolute position distance | No |
+| Position in φ | φ = token + pos | Relative position (via Ω_ij) | Yes |
+
+**Why NOT position in μ**: If position is in μ, then:
+- KL(q_i || Ω_ij[q_j]) ∝ |pos(i) - pos(j)|² for same tokens
+- Attention becomes distance-dependent regardless of content
+- Nearby tokens always attend more to each other (bad!)
+
+**Why position in φ works**: Transport Ω_ij naturally encodes position difference:
+- Same token at positions 3 and 7: Ω_37 ≠ I (encodes 4-position gap)
+- Same token at positions 10 and 14: Ω_{10,14} = Ω_37 (same relative distance!)
+- KL depends on semantic content + relative position, not absolute
+
+**Priors are position-independent**: `mu_prior = mu_q.clone()` is saved BEFORE position is added to φ. This ensures priors represent pure semantic meaning.
 
 ### Critical Notation: Priors (p) vs Momenta (π)
 

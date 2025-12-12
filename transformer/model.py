@@ -180,19 +180,20 @@ class GaugeTransformerLM(nn.Module):
         )
 
         # =================================================================
-        # Position Encoding for μ (NOT φ)
+        # Position Encoding for φ (Gauge Frame) - RELATIVE POSITION
         # =================================================================
-        # PRINCIPLED DESIGN: Position is external context, not internal gauge.
-        # - φ (gauge frame) encodes token TYPE (internal symmetry)
-        # - μ (belief mean) encodes content + position (external information)
-        # This preserves gauge equivalence: same token at different positions
-        # are on the same SO(3) orbit, differing only in μ.
-        self.pos_encoding_mu = nn.Embedding(max_seq_len, embed_dim)
-        nn.init.normal_(self.pos_encoding_mu.weight, mean=0.0, std=0.02)
-
-        # Keep the old gauge position encoding for backward compatibility,
-        # but it won't be used in forward pass
-        self._legacy_pos_encoding = GaugePositionalEncoding(
+        # PRINCIPLED DESIGN: Position encodes RELATIVE frame differences.
+        # - φ (gauge frame) = φ_token + φ_pos(i) encodes token type + position
+        # - μ (belief mean) = pure semantic content (NO position)
+        # - Transport Ω_ij = exp(φ_i·G)·exp(-φ_j·G) encodes RELATIVE position
+        #
+        # This gives shift-invariant attention: tokens 3 apart always have
+        # the same transport relationship, regardless of absolute position.
+        #
+        # Key insight: KL(q_i || Ω_ij[q_j]) depends on relative position
+        # (through transport), not absolute position (which would bias
+        # attention toward nearby tokens regardless of content).
+        self.pos_encoding = GaugePositionalEncoding(
             max_seq_len=max_seq_len,
             mode=pos_mode,
             scale=0.1,
@@ -313,28 +314,34 @@ class GaugeTransformerLM(nn.Module):
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
         # =================================================================
-        # 2. Add Position Encoding to μ (NOT φ)
+        # 2. Save Priors BEFORE adding position (position-independent semantics)
         # =================================================================
-        # PRINCIPLED: Position is external context, gauge (φ) is internal symmetry.
-        # This preserves gauge equivalence: same token at different positions
-        # remain on the same SO(3) orbit, differing only in μ.
-        positions = torch.arange(num_agents, device=device)
-        pos_embed = self.pos_encoding_mu(positions)  # (N, K)
-        mu_q = mu_q + pos_embed.unsqueeze(0)  # (B, N, K)
-
-        # Save embeddings (with position) as priors for variational FFN
+        # Priors represent "expected meaning of token" - independent of position.
+        # This is the correct VFE setup: prior = semantic, belief = contextualized.
         mu_prior = mu_q.clone()
+
+        # =================================================================
+        # 3. Add Position Encoding to φ (Gauge Frame) - RELATIVE POSITION
+        # =================================================================
+        # Position is encoded in gauge frame, giving RELATIVE position awareness:
+        # - φ_i = φ_token + φ_pos(i)
+        # - Transport Ω_ij = exp(φ_i·G)·exp(-φ_j·G) encodes relative position
+        # - KL(q_i || Ω_ij[q_j]) depends on relative position, not absolute
+        #
+        # This is shift-invariant: tokens 3 apart always have same transport.
+        # Uses proper SO(3) composition (BCH formula) to respect Lie structure.
+        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
 
         # Record embeddings for trajectory tracking
         if recorder is not None and recorder.enabled:
             recorder.record_embeddings(mu_q, sigma_q, phi)
 
-        # NOTE: φ is NOT modified by position encoding anymore.
-        # Transport Ω_ij = exp(φ_i·G)·exp(-φ_j·G) depends only on token TYPE,
-        # not position. This ensures gauge equivalence is preserved.
+        # NOTE: μ is NOT modified by position encoding.
+        # Position information flows through transport Ω_ij, not through μ.
+        # This ensures attention depends on relative position, not absolute.
 
         # =================================================================
-        # 3. Attention Mask (causal + optional sparsity)
+        # 4. Attention Mask (causal + optional sparsity)
         # =================================================================
         # Create attention mask based on pattern (full, local, strided)
         mask = create_attention_mask(
@@ -347,7 +354,7 @@ class GaugeTransformerLM(nn.Module):
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)  # (B, N, N)
 
         # =================================================================
-        # 3.5. Precompute Transport Operators (when evolve_phi=False)
+        # 5. Precompute Transport Operators (when evolve_phi=False)
         # =================================================================
         # When phi doesn't evolve, we can compute transport operators once
         # and reuse across all layers, saving ~6× matrix exponential calls.
@@ -361,7 +368,7 @@ class GaugeTransformerLM(nn.Module):
             cached_head_transports = None
 
         # =================================================================
-        # 4. Forward Through Transformer Stack
+        # 6. Forward Through Transformer Stack
         # =================================================================
         mu_q, sigma_q, phi, intermediates = self.transformer(
             mu_q,
@@ -375,7 +382,7 @@ class GaugeTransformerLM(nn.Module):
         )
 
         # =================================================================
-        # 5. Project to Vocabulary (one prediction per agent)
+        # 7. Project to Vocabulary (one prediction per agent)
         # =================================================================
         logits = self.out_proj(mu_q)  # (B, N, V)
 
@@ -427,16 +434,16 @@ class GaugeTransformerLM(nn.Module):
         # Embeddings
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
-        # Add position encoding to μ (NOT φ)
-        # PRINCIPLED: Position is external context, gauge (φ) is internal symmetry.
-        positions = torch.arange(num_agents, device=device)
-        pos_embed = self.pos_encoding_mu(positions)  # (N, K)
-        mu_q = mu_q + pos_embed.unsqueeze(0)  # (B, N, K)
-
-        # Save embeddings (with position) as priors for variational FFN
+        # Save priors BEFORE adding position (position-independent semantics)
         mu_prior = mu_q.clone()
 
-        # NOTE: φ is NOT modified - transport depends only on token type
+        # Add position encoding to φ (gauge frame) - RELATIVE POSITION
+        # Position is encoded in gauge frame, giving relative position awareness:
+        # - φ_i = φ_token + φ_pos(i)
+        # - Transport Ω_ij encodes relative position, not absolute
+        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
+
+        # NOTE: μ is NOT modified - position flows through transport Ω_ij
 
         # Attention mask (causal + optional sparsity)
         mask = create_attention_mask(
