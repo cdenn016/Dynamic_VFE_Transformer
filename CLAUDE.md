@@ -283,3 +283,98 @@ Ours: ∂β_{ij}/∂θ — emerges from differentiating softmax attention:
 2. Token → input attribution (would need cached attention states)
 3. Large-scale benchmarks (WikiText, etc.) — pending compute
 
+## VFE, Renormalization, and the Information Bottleneck
+
+The gauge transformer framework unifies three deep theoretical perspectives: variational inference, renormalization group flow, and the information bottleneck principle.
+
+### The Information Bottleneck (IB) Principle
+
+Tishby's IB: Find representation Z of input X that predicts Y while compressing:
+
+```
+L_IB = I(Z; Y) - β · I(Z; X)
+```
+
+- **I(Z; Y)**: Preserve information relevant to target (prediction)
+- **I(Z; X)**: Discard irrelevant input details (compression)
+- **β**: Tradeoff parameter
+
+### VFE IS the Information Bottleneck
+
+The variational free energy:
+
+```
+F = α·KL(q||p) + CE(Wμ, y) + λ·Σ_ij β_ij·KL(q_i||Ω_ij·q_j)
+    ─────────   ──────────   ─────────────────────────────
+    compression  prediction        coherence
+```
+
+| IB Term | VFE Term | Meaning |
+|---------|----------|---------|
+| I(Z; X) | KL(q ‖ p) | Bits used beyond prior |
+| I(Z; Y) | -CE | Prediction accuracy |
+| β | α | Compression-accuracy tradeoff |
+
+**The prior p is the reference channel** — beliefs at p carry zero information, deviations carry bits.
+
+### Dynamic β: Adaptive Compression
+
+The attention weights:
+
+```
+β_ij = softmax(-KL(q_i || Ω_ij·q_j) / κ)
+```
+
+This implements **input-dependent compression**:
+
+- **Similar beliefs** (low KL) → high β → pool/average information
+- **Distinct beliefs** (high KL) → low β → preserve separately
+
+**The temperature κ IS the IB tradeoff**:
+- High κ → soft attention → aggressive compression
+- Low κ → sharp attention → selective preservation
+
+### Renormalization = Hierarchical IB
+
+Each VFE iteration (or layer) performs coarse-graining:
+
+```
+Raw tokens:    [t1] [t2] [t3] [t4] [t5] [t6]
+                    ↓ VFE step (β clusters similar beliefs)
+Meta-agents:   [   A   ] [   B   ] [   C   ]
+                    ↓ VFE step
+Coarser:       [     X     ] [     Y     ]
+                    ↓
+Output:        Minimal sufficient statistics for prediction
+```
+
+- **Tokens with KL≈0 merge** — within-group variation discarded
+- **Between-group differences survive** — predictively relevant
+- **RG fixed point** = optimal IB representation (can't compress further without losing prediction)
+
+### Gauge Invariance: Geometric Compression
+
+The transport Ω_ij enforces gauge invariance:
+
+```
+KL(q_i || Ω_ij·q_j) is gauge-invariant
+```
+
+- Multiple configurations differing by gauge → same representation
+- Gauge-variant information automatically compressed out
+- Only gauge-invariant (physical) information survives
+
+This is a **symmetry-based prior** implementing compression geometrically.
+
+### The Unified Picture
+
+| Concept | IB View | VFE View | RG View |
+|---------|---------|----------|---------|
+| Compression | min I(Z;X) | KL(q‖p) → 0 | Coarse-graining |
+| Prediction | max I(Z;Y) | min CE | Fixed point stability |
+| Tradeoff | β parameter | κ temperature | Relevant vs irrelevant |
+| Representation | Z | (μ, Σ) beliefs | Renormalized couplings |
+| Hierarchy | Deep IB | VFE iterations | RG flow |
+
+**Key insight**: Emergent block structure in β_ij reveals which tokens carry redundant information about the target and can be safely merged. The dynamics discovers the optimal compression automatically.
+
