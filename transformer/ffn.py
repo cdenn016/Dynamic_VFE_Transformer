@@ -67,13 +67,13 @@ class GaugeFFN(nn.Module):
         # Dynamic VFE specific parameters
         vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
-        # Stabilized dynamic VFE parameters
-        vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
-        vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        # AD-HOC stabilization (default OFF for first-principles)
+        vfe_kappa_start: float = None,       # AD-HOC: Temp annealing (None = use kappa, no annealing)
+        vfe_balance_gradients: bool = False, # AD-HOC: Balance gradient norms
         vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
-        vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
-        vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
-        vfe_grad_clip: float = 10.0,         # Per-component gradient clip
+        vfe_entropy_penalty: float = 0.0,    # AD-HOC: Penalty for uniform β
+        vfe_self_attn_damping: float = 0.0,  # AD-HOC: Reduce self-attention (0-1)
+        vfe_grad_clip: float = 1e3,          # Numerical stability (overflow prevention)
         # Variational parameters
         alpha: float = 0.001,
         tau_eff: float = 1.0,

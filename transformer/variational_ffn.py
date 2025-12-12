@@ -1113,19 +1113,8 @@ class VariationalFFNDynamic(nn.Module):
         # Track β evolution if requested
         beta_history = [] if return_beta_history else None
 
-        # Compute discrete observation gradient once (frozen during E-step)
-        discrete_obs_grad = None
-        if targets is not None and W_out is not None:
-            with torch.no_grad():
-                logits = torch.matmul(mu_current, W_out.T)
-                probs = F.softmax(logits, dim=-1)
-                targets_valid = targets.clone()
-                targets_valid[targets == -1] = 0
-                one_hot = F.one_hot(targets_valid, num_classes=W_out.shape[0]).float()
-                mask_obs = (targets != -1).unsqueeze(-1).float()
-                one_hot = one_hot * mask_obs
-                grad_error = (probs - one_hot) * mask_obs
-                discrete_obs_grad = torch.matmul(grad_error, W_out)
+        # Store observation info for fresh gradient computation
+        has_observations = targets is not None and W_out is not None
 
         # =====================================================================
         # VFE Descent Loop with Dynamic β
@@ -1168,8 +1157,18 @@ class VariationalFFNDynamic(nn.Module):
                 eps=eps,
             )
 
-            # Add observation gradient if provided
-            if discrete_obs_grad is not None:
+            # Add FRESH observation gradient (recomputed from current beliefs)
+            if has_observations:
+                with torch.no_grad():
+                    logits = torch.matmul(mu_current, W_out.T)
+                    probs = F.softmax(logits, dim=-1)
+                    targets_valid = targets.clone()
+                    targets_valid[targets == -1] = 0
+                    one_hot = F.one_hot(targets_valid, num_classes=W_out.shape[0]).float()
+                    mask_obs = (targets != -1).unsqueeze(-1).float()
+                    one_hot = one_hot * mask_obs
+                    grad_error = (probs - one_hot) * mask_obs
+                    discrete_obs_grad = torch.matmul(grad_error, W_out)
                 grad_mu = grad_mu + discrete_obs_grad
 
             # Clip for stability
@@ -1218,36 +1217,27 @@ class VariationalFFNDynamic(nn.Module):
 
 
 # =============================================================================
-# Stabilized Dynamic-β VFE: Prevents training collapse
+# Dynamic-β VFE with Optional Stabilizations (default: principled only)
 # =============================================================================
 
 class VariationalFFNDynamicStable(nn.Module):
     """
-    Stabilized Dynamic-β VFE FFN that prevents training collapse.
+    Dynamic-β VFE FFN with optional (ad-hoc) stabilization features.
 
-    Key improvements over VariationalFFNDynamic:
+    By default, this is identical to VariationalFFNDynamic (first-principles).
+    Enable stabilization options only if training is unstable.
 
-    1. **Fresh observation gradients**: Recompute ∂CE/∂μ at each step using
-       current beliefs (not frozen at step 0)
+    PRINCIPLED (always on):
+    - Fresh observation gradients: ∂CE/∂μ recomputed from current beliefs
 
-    2. **Temperature annealing**: Start with high κ (soft β), anneal down to
-       target κ. Prevents early positive feedback runaway.
+    AD-HOC (opt-in, default OFF):
+    - Temperature annealing: κ_start→κ during iterations (NOT in theory)
+    - Gradient norm balancing: Scale gradients to equal magnitude (ad-hoc)
+    - Entropy penalty: Extra term penalizing uniform β (adds to VFE)
+    - Self-attention damping: Suppress diagonal β (artificial)
 
-    3. **Gradient norm balancing**: Automatically balance alignment vs observation
-       gradient magnitudes to prevent one dominating.
-
-    4. **Entropy regularization**: Optional penalty when β becomes too uniform
-       (entropy > threshold), encourages peaked attention.
-
-    5. **Self-attention damping**: Reduce diagonal elements of β to encourage
-       cross-token communication instead of self-loops.
-
-    The instability in the original dynamic-β occurs because:
-    - Stale observation gradients push beliefs in wrong directions
-    - Positive feedback (similar→higher β→more similar) runs away
-    - β becomes uniform → gradients vanish → CE explodes
-
-    This version breaks the runaway loop through controlled feedback.
+    Use the ad-hoc features for debugging unstable training, but the
+    first-principles version (defaults) should be preferred.
     """
 
     def __init__(
@@ -1256,20 +1246,20 @@ class VariationalFFNDynamicStable(nn.Module):
         generators: torch.Tensor,  # (3, K, K) SO(3) generators
         alpha: float = 0.01,       # Self-coupling weight (KL(q||p))
         lambda_belief: float = 1.0,  # Belief alignment weight
-        kappa: float = 1.0,        # Target attention temperature
-        kappa_start: float = 5.0,  # Initial temperature (higher = softer)
+        kappa: float = 1.0,        # Attention temperature
+        kappa_start: float = None, # AD-HOC: Initial temp for annealing (None = no annealing)
         n_iterations: int = 10,    # VFE descent steps
         learnable_lr: bool = True, # Learn step size?
         update_sigma: bool = True, # Update covariances?
         m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         m_step_rate: float = 0.01, # Prior update rate
         diagonal_covariance: bool = False,
-        # Stabilization parameters
-        balance_gradients: bool = True,   # Balance alignment vs obs gradient norms
+        # AD-HOC stabilization (all default OFF for first-principles)
+        balance_gradients: bool = False,  # AD-HOC: Balance gradient norms
         obs_grad_weight: float = 1.0,     # Relative weight of observation gradient
-        entropy_penalty: float = 0.0,     # Penalty for high-entropy (uniform) β
-        self_attn_damping: float = 0.0,   # Reduce diagonal β by this factor (0-1)
-        grad_clip: float = 10.0,          # Per-component gradient clip
+        entropy_penalty: float = 0.0,     # AD-HOC: Penalty for uniform β
+        self_attn_damping: float = 0.0,   # AD-HOC: Reduce diagonal β (0-1)
+        grad_clip: float = 1e3,           # Numerical stability (not ad-hoc, just overflow prevention)
     ):
         """
         Initialize stabilized dynamic-β VFE FFN.
@@ -1305,7 +1295,8 @@ class VariationalFFNDynamicStable(nn.Module):
         self.alpha = alpha
         self.lambda_belief = lambda_belief
         self.kappa = kappa
-        self.kappa_start = kappa_start
+        # kappa_start = None means no annealing (use kappa as constant)
+        self.kappa_start = kappa_start if kappa_start is not None else kappa
 
         # M-step
         self.m_step_interval = m_step_interval

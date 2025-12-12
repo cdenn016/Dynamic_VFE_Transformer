@@ -81,13 +81,13 @@ class GaugeTransformerBlock(nn.Module):
         # Dynamic VFE specific parameters
         ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
-        # Stabilized dynamic VFE parameters
-        ffn_vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
-        ffn_vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        # AD-HOC stabilization (default OFF for first-principles)
+        ffn_vfe_kappa_start: float = None,       # AD-HOC: Temp annealing (None = no annealing)
+        ffn_vfe_balance_gradients: bool = False, # AD-HOC: Balance gradient norms
         ffn_vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
-        ffn_vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
-        ffn_vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
-        ffn_vfe_grad_clip: float = 10.0,         # Per-component gradient clip
+        ffn_vfe_entropy_penalty: float = 0.0,    # AD-HOC: Penalty for uniform β
+        ffn_vfe_self_attn_damping: float = 0.0,  # AD-HOC: Reduce self-attention (0-1)
+        ffn_vfe_grad_clip: float = 1e3,          # Numerical stability (overflow prevention)
         ffn_tau_eff: float = 1.0,
         ffn_kappa: float = 1.0,
         ffn_n_iterations: int = 1,
@@ -496,13 +496,13 @@ class GaugeTransformerStack(nn.Module):
         # Dynamic VFE specific parameters
         ffn_vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         ffn_vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
-        # Stabilized dynamic VFE parameters
-        ffn_vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
-        ffn_vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        # AD-HOC stabilization (default OFF for first-principles)
+        ffn_vfe_kappa_start: float = None,       # AD-HOC: Temp annealing (None = no annealing)
+        ffn_vfe_balance_gradients: bool = False, # AD-HOC: Balance gradient norms
         ffn_vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
-        ffn_vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
-        ffn_vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
-        ffn_vfe_grad_clip: float = 10.0,         # Per-component gradient clip
+        ffn_vfe_entropy_penalty: float = 0.0,    # AD-HOC: Penalty for uniform β
+        ffn_vfe_self_attn_damping: float = 0.0,  # AD-HOC: Reduce self-attention (0-1)
+        ffn_vfe_grad_clip: float = 1e3,          # Numerical stability (overflow prevention)
         # Hamiltonian specific
         ffn_hamiltonian_dt: float = 0.01,
         ffn_hamiltonian_n_steps: int = 10,
