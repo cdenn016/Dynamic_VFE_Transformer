@@ -505,6 +505,21 @@ class GaugeTransformerLM(nn.Module):
                 phi = phi_ffn
             # Store diagnostics for monitoring
             final_block._last_hamiltonian_diagnostics = diagnostics
+        elif final_block.ffn_mode in ['VFE_dynamic', 'VFE_dynamic_stable']:
+            # Dynamic-β VFE modes return (mu, sigma) tuple
+            mu_ffn, sigma_ffn = final_block.ffn(
+                mu=mu_normalized,
+                beta=beta,
+                mu_prior=mu_prior,
+                phi=phi,
+                sigma=sigma_q,
+                mask=mask,
+                targets=targets,
+                W_out=self.out_proj.weight if hasattr(self.out_proj, 'weight') else None,
+            )
+            # Update covariances if evolving
+            if final_block.evolve_sigma and sigma_ffn is not None:
+                sigma_q = sigma_ffn
         else:  # Legacy variational modes (variational_approx, variational_full)
             mu_ffn = final_block.ffn(
                 mu=mu_normalized,
