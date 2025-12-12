@@ -15,6 +15,12 @@ Author: Optimized from test suite convergence
 Date: November 2025
 """
 
+# Suppress noisy warnings BEFORE other imports
+import warnings
+warnings.filterwarnings("ignore", message="CUDA path could not be detected", module="cupy")
+warnings.filterwarnings("ignore", message="Failed to find cuobjdump", module="triton")
+warnings.filterwarnings("ignore", message="Failed to find nvdisasm", module="triton")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
