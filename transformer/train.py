@@ -307,6 +307,10 @@ def compute_free_energy_loss(
             sigma_p=sigma_p,  # Embedding covariances
         )  # (B, N)
 
+        # CRITICAL: Normalize by K to keep gradients O(1) regardless of dimension
+        K = mu_q.shape[-1]
+        kl_per_agent = kl_per_agent / K
+
         # Average over batch and agents
         self_consistency_loss = alpha * kl_per_agent.mean()
     else:
