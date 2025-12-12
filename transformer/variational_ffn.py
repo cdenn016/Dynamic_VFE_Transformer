@@ -1218,6 +1218,362 @@ class VariationalFFNDynamic(nn.Module):
 
 
 # =============================================================================
+# Stabilized Dynamic-β VFE: Prevents training collapse
+# =============================================================================
+
+class VariationalFFNDynamicStable(nn.Module):
+    """
+    Stabilized Dynamic-β VFE FFN that prevents training collapse.
+
+    Key improvements over VariationalFFNDynamic:
+
+    1. **Fresh observation gradients**: Recompute ∂CE/∂μ at each step using
+       current beliefs (not frozen at step 0)
+
+    2. **Temperature annealing**: Start with high κ (soft β), anneal down to
+       target κ. Prevents early positive feedback runaway.
+
+    3. **Gradient norm balancing**: Automatically balance alignment vs observation
+       gradient magnitudes to prevent one dominating.
+
+    4. **Entropy regularization**: Optional penalty when β becomes too uniform
+       (entropy > threshold), encourages peaked attention.
+
+    5. **Self-attention damping**: Reduce diagonal elements of β to encourage
+       cross-token communication instead of self-loops.
+
+    The instability in the original dynamic-β occurs because:
+    - Stale observation gradients push beliefs in wrong directions
+    - Positive feedback (similar→higher β→more similar) runs away
+    - β becomes uniform → gradients vanish → CE explodes
+
+    This version breaks the runaway loop through controlled feedback.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        generators: torch.Tensor,  # (3, K, K) SO(3) generators
+        alpha: float = 0.01,       # Self-coupling weight (KL(q||p))
+        lambda_belief: float = 1.0,  # Belief alignment weight
+        kappa: float = 1.0,        # Target attention temperature
+        kappa_start: float = 5.0,  # Initial temperature (higher = softer)
+        n_iterations: int = 10,    # VFE descent steps
+        learnable_lr: bool = True, # Learn step size?
+        update_sigma: bool = True, # Update covariances?
+        m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
+        m_step_rate: float = 0.01, # Prior update rate
+        diagonal_covariance: bool = False,
+        # Stabilization parameters
+        balance_gradients: bool = True,   # Balance alignment vs obs gradient norms
+        obs_grad_weight: float = 1.0,     # Relative weight of observation gradient
+        entropy_penalty: float = 0.0,     # Penalty for high-entropy (uniform) β
+        self_attn_damping: float = 0.0,   # Reduce diagonal β by this factor (0-1)
+        grad_clip: float = 10.0,          # Per-component gradient clip
+    ):
+        """
+        Initialize stabilized dynamic-β VFE FFN.
+
+        Args:
+            embed_dim: K - belief vector dimension
+            generators: SO(3) generators (3, K, K)
+            alpha: Prior anchoring weight
+            lambda_belief: Belief alignment weight
+            kappa: Target temperature (reached at final iteration)
+            kappa_start: Initial temperature (higher for soft start)
+            n_iterations: Number of VFE iterations
+            learnable_lr: Learn step size as parameter
+            update_sigma: Also update covariance Σ
+            m_step_interval: Run M-step every N iterations (0=off)
+            m_step_rate: Prior update rate in M-step
+            diagonal_covariance: Use diagonal Σ for efficiency
+            balance_gradients: Auto-balance gradient magnitudes
+            obs_grad_weight: Relative importance of observation gradient
+            entropy_penalty: Penalty coefficient for uniform β
+            self_attn_damping: Factor to reduce self-attention (0-1)
+            grad_clip: Maximum gradient magnitude per component
+        """
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.register_buffer('generators', generators)
+        self.n_iterations = n_iterations
+        self.update_sigma = update_sigma
+        self.diagonal_covariance = diagonal_covariance
+
+        # VFE hyperparameters
+        self.alpha = alpha
+        self.lambda_belief = lambda_belief
+        self.kappa = kappa
+        self.kappa_start = kappa_start
+
+        # M-step
+        self.m_step_interval = m_step_interval
+        self.m_step_rate = m_step_rate
+
+        # Stabilization
+        self.balance_gradients = balance_gradients
+        self.obs_grad_weight = obs_grad_weight
+        self.entropy_penalty = entropy_penalty
+        self.self_attn_damping = self_attn_damping
+        self.grad_clip = grad_clip
+
+        # Learnable step size
+        if learnable_lr:
+            self.lr = nn.Parameter(torch.tensor(0.1))
+        else:
+            self.register_buffer('lr', torch.tensor(0.1))
+
+    def _compute_obs_gradient(
+        self,
+        mu: torch.Tensor,      # (B, N, K) current beliefs
+        targets: torch.Tensor,  # (B, N) target tokens
+        W_out: torch.Tensor,   # (V, K) output projection
+    ) -> torch.Tensor:
+        """
+        Compute fresh observation gradient: ∂CE/∂μ = W^T(softmax(Wμ) - one_hot(y))
+
+        This is called at each iteration, not frozen at step 0!
+        """
+        with torch.no_grad():
+            logits = torch.matmul(mu, W_out.T)  # (B, N, V)
+            probs = F.softmax(logits, dim=-1)
+
+            targets_valid = targets.clone()
+            targets_valid[targets == -1] = 0
+            one_hot = F.one_hot(targets_valid, num_classes=W_out.shape[0]).float()
+
+            mask_obs = (targets != -1).unsqueeze(-1).float()
+            one_hot = one_hot * mask_obs
+
+            grad_error = (probs - one_hot) * mask_obs
+            obs_grad = torch.matmul(grad_error, W_out)  # (B, N, K)
+
+        return obs_grad
+
+    def _apply_entropy_penalty(
+        self,
+        beta: torch.Tensor,  # (B, N, N)
+        grad_mu: torch.Tensor,  # (B, N, K)
+        mu: torch.Tensor,
+        phi: torch.Tensor,
+        eps: float = 1e-8,
+    ) -> torch.Tensor:
+        """
+        Add gradient term that penalizes high-entropy (uniform) attention.
+
+        When β is uniform, entropy H(β_i) = log(N).
+        We add a penalty that pushes beliefs to be more distinct,
+        which increases KL variance and peaks the attention.
+
+        Penalty: λ_ent * mean_i[H(β_i)]
+        Gradient: pushes μ to increase KL variance
+        """
+        if self.entropy_penalty <= 0:
+            return grad_mu
+
+        B, N, N_key = beta.shape
+
+        # Compute row-wise entropy: H(β_i) = -Σ_j β_ij log(β_ij)
+        log_beta = torch.log(beta + eps)
+        entropy_per_query = -torch.sum(beta * log_beta, dim=-1)  # (B, N)
+
+        # Max entropy is log(N) - penalize when close to max
+        max_entropy = np.log(N_key)
+        entropy_ratio = entropy_per_query / max_entropy  # (B, N) in [0, 1]
+
+        # Only penalize when entropy is high (>0.8 of max)
+        penalty_mask = (entropy_ratio > 0.8).float()
+
+        # Simple penalty: push μ away from mean (increase variance)
+        mu_mean = mu.mean(dim=1, keepdim=True)  # (B, 1, K)
+        anti_collapse_grad = self.entropy_penalty * penalty_mask.unsqueeze(-1) * (mu_mean - mu)
+
+        return grad_mu + anti_collapse_grad
+
+    def forward(
+        self,
+        mu: torch.Tensor,          # (B, N, K)
+        beta: torch.Tensor,        # (B, n_heads, N, N) - initial, will be recomputed
+        mu_prior: torch.Tensor,    # (B, N, K)
+        phi: torch.Tensor,         # (B, N, 3)
+        sigma: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        W_out: Optional[torch.Tensor] = None,
+        return_beta_history: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[list]]:
+        """
+        Stabilized dynamic VFE descent.
+
+        Flow at each iteration t:
+            1. κ(t) = kappa_start + (kappa - kappa_start) * t / n_iterations  [anneal]
+            2. β = softmax(-KL/κ(t))  [recompute with current κ]
+            3. Apply self-attention damping: β_ii *= (1 - damping)
+            4. ∂F_align/∂μ = VFE gradient (alignment + prior)
+            5. ∂F_obs/∂μ = observation gradient (FRESH, using current μ)
+            6. Balance gradients if enabled
+            7. Apply entropy penalty if β too uniform
+            8. Natural gradient projection + update
+        """
+        B, N, K = mu.shape
+        device = mu.device
+        dtype = mu.dtype
+        eps = 1e-6
+
+        # Initialize sigma
+        if sigma is None:
+            if self.diagonal_covariance:
+                sigma = torch.ones(B, N, K, device=device, dtype=dtype) * 0.1
+            else:
+                sigma = 0.1 * torch.eye(K, device=device, dtype=dtype).unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1).clone()
+
+        is_diagonal = sigma.dim() == 3
+        sigma_p = sigma.clone()
+
+        # Current state
+        mu_current = mu.clone()
+        sigma_current = sigma.clone()
+        mu_p_current = mu_prior.clone()
+
+        beta_history = [] if return_beta_history else None
+
+        # =====================================================================
+        # VFE Descent with Stabilization
+        # =====================================================================
+        for iteration in range(self.n_iterations):
+            # =================================================================
+            # STEP 1: Compute annealed temperature
+            # =================================================================
+            progress = iteration / max(1, self.n_iterations - 1)
+            kappa_t = self.kappa_start + (self.kappa - self.kappa_start) * progress
+
+            # =================================================================
+            # STEP 2: Recompute β with current temperature
+            # =================================================================
+            beta_current = compute_attention_weights(
+                mu_q=mu_current,
+                sigma_q=sigma_current,
+                phi=phi,
+                generators=self.generators,
+                kappa=kappa_t,  # Use annealed temperature!
+                epsilon=eps,
+                mask=mask,
+                use_numba=False,
+                return_kl=False,
+                diagonal_covariance=is_diagonal,
+            )
+
+            # =================================================================
+            # STEP 3: Apply self-attention damping
+            # =================================================================
+            if self.self_attn_damping > 0:
+                # Reduce diagonal (self-attention) to encourage cross-token comm
+                diag_mask = torch.eye(N, device=device, dtype=dtype).unsqueeze(0)
+                beta_current = beta_current * (1 - self.self_attn_damping * diag_mask)
+                # Renormalize
+                beta_current = beta_current / (beta_current.sum(dim=-1, keepdim=True) + eps)
+
+            if return_beta_history:
+                beta_history.append(beta_current.detach().clone())
+
+            # =================================================================
+            # STEP 4: Compute alignment gradient (VFE terms)
+            # =================================================================
+            grad_mu_align, grad_sigma = compute_vfe_gradients_gpu(
+                mu_q=mu_current,
+                sigma_q=sigma_current,
+                mu_p=mu_p_current,
+                sigma_p=sigma_p,
+                beta=beta_current,
+                phi=phi,
+                generators=self.generators,
+                alpha=self.alpha,
+                lambda_belief=self.lambda_belief,
+                kappa=kappa_t,
+                eps=eps,
+            )
+
+            # =================================================================
+            # STEP 5: Compute FRESH observation gradient
+            # =================================================================
+            if targets is not None and W_out is not None:
+                grad_mu_obs = self._compute_obs_gradient(mu_current, targets, W_out)
+            else:
+                grad_mu_obs = torch.zeros_like(mu_current)
+
+            # =================================================================
+            # STEP 6: Balance gradient magnitudes
+            # =================================================================
+            if self.balance_gradients:
+                # Compute norms
+                norm_align = grad_mu_align.norm() + eps
+                norm_obs = grad_mu_obs.norm() + eps
+
+                # Scale so both have similar magnitude
+                if norm_obs > eps:
+                    # Scale obs gradient to match alignment, then weight
+                    scale = (norm_align / norm_obs) * self.obs_grad_weight
+                    grad_mu_obs = grad_mu_obs * scale
+            else:
+                grad_mu_obs = grad_mu_obs * self.obs_grad_weight
+
+            # Combine gradients
+            grad_mu = grad_mu_align + grad_mu_obs
+
+            # =================================================================
+            # STEP 7: Apply entropy penalty if β too uniform
+            # =================================================================
+            grad_mu = self._apply_entropy_penalty(
+                beta_current, grad_mu, mu_current, phi, eps
+            )
+
+            # =================================================================
+            # STEP 8: Clip and project to natural gradient
+            # =================================================================
+            grad_mu = torch.clamp(grad_mu, min=-self.grad_clip, max=self.grad_clip)
+            grad_sigma = torch.clamp(grad_sigma, min=-self.grad_clip, max=self.grad_clip)
+
+            nat_grad_mu, nat_grad_sigma = compute_natural_gradient_gpu(
+                grad_mu, grad_sigma, sigma_current, eps=eps
+            )
+
+            # =================================================================
+            # STEP 9: Update beliefs
+            # =================================================================
+            mu_current = mu_current - self.lr * nat_grad_mu
+
+            if self.update_sigma:
+                if is_diagonal:
+                    sigma_current = (sigma_current - self.lr * nat_grad_sigma).clamp(min=eps)
+                else:
+                    sigma_current = sigma_current - self.lr * nat_grad_sigma
+                    sigma_current = 0.5 * (sigma_current + sigma_current.transpose(-1, -2))
+                    sigma_current = sigma_current + eps * torch.eye(K, device=device, dtype=dtype)
+
+            # =================================================================
+            # STEP 10: Optional M-step
+            # =================================================================
+            if self.m_step_interval > 0 and (iteration + 1) % self.m_step_interval == 0:
+                mu_p_current = mu_p_current + self.m_step_rate * (mu_current.detach() - mu_p_current)
+
+        # Return results
+        if self.update_sigma:
+            return mu_current.detach(), sigma_current.detach(), beta_history
+        else:
+            return mu_current.detach(), None, beta_history
+
+    def extra_repr(self) -> str:
+        return (
+            f"embed_dim={self.embed_dim}, n_iterations={self.n_iterations}, "
+            f"alpha={self.alpha}, lambda_belief={self.lambda_belief}, "
+            f"kappa={self.kappa}, kappa_start={self.kappa_start}, "
+            f"balance_gradients={self.balance_gradients}, "
+            f"entropy_penalty={self.entropy_penalty}"
+        )
+
+
+# =============================================================================
 # Legacy Implementations (for backward compatibility)
 # =============================================================================
 

@@ -29,7 +29,8 @@ from transformer.variational_ffn import (
     VariationalFFNApproximate,
     VariationalFFNFull,
     VariationalFFNGradientEngine,
-    VariationalFFNDynamic,  # NEW: Dynamic-β VFE with attention-belief co-evolution
+    VariationalFFNDynamic,  # Dynamic-β VFE with attention-belief co-evolution
+    VariationalFFNDynamicStable,  # Stabilized version with temp annealing + gradient balancing
 )
 from transformer.hamiltonian_ffn import HamiltonianFFN, MassConfig
 
@@ -43,11 +44,15 @@ class GaugeFFN(nn.Module):
         'variational_approx': Approximate variational descent (legacy)
         'variational_full': Full variational descent (legacy)
         'variational_gradient_engine': Full active inference (fixed β)
-        'VFE_dynamic': Dynamic-β VFE with attention-belief co-evolution (RECOMMENDED!)
+        'VFE_dynamic': Dynamic-β VFE with attention-belief co-evolution
+        'VFE_dynamic_stable': Stabilized dynamic-β with temperature annealing (RECOMMENDED!)
         'hamiltonian': Symplectic Hamiltonian dynamics
 
-    VFE_dynamic is the theoretically correct implementation where β is recomputed
-    at each VFE step, enabling emergent block structure in attention.
+    VFE_dynamic_stable is the recommended implementation - it recomputes β at each step
+    but includes stabilization to prevent training collapse:
+    - Temperature annealing (soft → sharp β)
+    - Fresh observation gradients (not frozen)
+    - Gradient norm balancing
 
     Switch via mode parameter or at runtime.
     """
@@ -58,10 +63,17 @@ class GaugeFFN(nn.Module):
         hidden_dim: int,
         generators: Optional[torch.Tensor] = None,  # (3, K, K)
         dropout: float = 0.1,
-        mode: Literal['learned', 'standard', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE', 'VFE_dynamic', 'hamiltonian'] = 'learned',
+        mode: Literal['learned', 'standard', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE', 'VFE_dynamic', 'VFE_dynamic_stable', 'hamiltonian'] = 'learned',
         # Dynamic VFE specific parameters
         vfe_dynamic_m_step_interval: int = 0,  # M-step every N steps (0 = disabled)
         vfe_dynamic_m_step_rate: float = 0.01,  # Prior update rate
+        # Stabilized dynamic VFE parameters
+        vfe_kappa_start: float = 5.0,        # Initial temperature (higher = softer)
+        vfe_balance_gradients: bool = True,  # Auto-balance gradient norms
+        vfe_obs_grad_weight: float = 1.0,    # Relative weight of observation gradient
+        vfe_entropy_penalty: float = 0.0,    # Penalty for uniform β
+        vfe_self_attn_damping: float = 0.0,  # Reduce self-attention (0-1)
+        vfe_grad_clip: float = 10.0,         # Per-component gradient clip
         # Variational parameters
         alpha: float = 0.001,
         tau_eff: float = 1.0,
@@ -154,7 +166,7 @@ class GaugeFFN(nn.Module):
         # =================================================================
         # Variational FFNs (active inference)
         # =================================================================
-        if mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic']:
+        if mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'VFE_dynamic_stable']:
             if generators is None:
                 raise ValueError("generators required for variational modes")
 
@@ -178,7 +190,7 @@ class GaugeFFN(nn.Module):
                     learnable_lr=learnable_lr,
                 )
             elif mode == 'VFE_dynamic':
-                # NEW: Dynamic-β VFE with attention-belief co-evolution
+                # Dynamic-β VFE with attention-belief co-evolution
                 self.variational_ffn = VariationalFFNDynamic(
                     embed_dim=embed_dim,
                     generators=generators,
@@ -191,6 +203,28 @@ class GaugeFFN(nn.Module):
                     m_step_interval=vfe_dynamic_m_step_interval,
                     m_step_rate=vfe_dynamic_m_step_rate,
                     diagonal_covariance=diagonal_covariance,
+                )
+            elif mode == 'VFE_dynamic_stable':
+                # Stabilized dynamic-β VFE with temperature annealing (RECOMMENDED!)
+                self.variational_ffn = VariationalFFNDynamicStable(
+                    embed_dim=embed_dim,
+                    generators=generators,
+                    alpha=alpha,
+                    lambda_belief=lambda_belief,
+                    kappa=kappa,
+                    kappa_start=vfe_kappa_start,
+                    n_iterations=n_iterations,
+                    learnable_lr=learnable_lr,
+                    update_sigma=update_sigma,
+                    m_step_interval=vfe_dynamic_m_step_interval,
+                    m_step_rate=vfe_dynamic_m_step_rate,
+                    diagonal_covariance=diagonal_covariance,
+                    # Stabilization parameters
+                    balance_gradients=vfe_balance_gradients,
+                    obs_grad_weight=vfe_obs_grad_weight,
+                    entropy_penalty=vfe_entropy_penalty,
+                    self_attn_damping=vfe_self_attn_damping,
+                    grad_clip=vfe_grad_clip,
                 )
             else:  # variational_gradient_engine
                 self.variational_ffn = VariationalFFNGradientEngine(
@@ -324,7 +358,7 @@ class GaugeFFN(nn.Module):
             return (mu_out, sigma_out)
 
         elif self.mode == 'VFE_dynamic':
-            # NEW: Dynamic-β VFE with attention-belief co-evolution
+            # Dynamic-β VFE with attention-belief co-evolution
             # β is recomputed at EACH VFE step, enabling emergent block structure
             if mu_prior is None or phi is None:
                 raise ValueError("VFE_dynamic requires mu_prior, phi")
@@ -343,6 +377,25 @@ class GaugeFFN(nn.Module):
                 return_beta_history=False,  # Set True for debugging/visualization
             )
             # Return (mu, sigma) like gradient_engine for compatibility
+            return (mu_out, sigma_out)
+
+        elif self.mode == 'VFE_dynamic_stable':
+            # Stabilized dynamic-β VFE (RECOMMENDED!)
+            # Same as VFE_dynamic but with temperature annealing + gradient balancing
+            if mu_prior is None or phi is None:
+                raise ValueError("VFE_dynamic_stable requires mu_prior, phi")
+
+            mu_out, sigma_out, beta_history = self.variational_ffn(
+                mu=mu,
+                beta=beta,
+                mu_prior=mu_prior,
+                phi=phi,
+                sigma=sigma,
+                mask=mask,
+                targets=targets,
+                W_out=W_out,
+                return_beta_history=False,
+            )
             return (mu_out, sigma_out)
 
         elif self.mode == 'hamiltonian':
@@ -388,11 +441,11 @@ class GaugeFFN(nn.Module):
         elif mode == 'VFE':
             mode = 'variational_gradient_engine'
 
-        valid_modes = ['learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'hamiltonian']
+        valid_modes = ['learned', 'variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'VFE_dynamic_stable', 'hamiltonian']
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode: {mode}. Valid modes: {valid_modes} (or aliases: 'standard', 'VFE')")
 
-        if mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic']:
+        if mode in ['variational_approx', 'variational_full', 'variational_gradient_engine', 'VFE_dynamic', 'VFE_dynamic_stable']:
             if not hasattr(self, 'variational_ffn'):
                 raise ValueError(f"Mode {mode} not initialized")
 
