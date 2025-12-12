@@ -776,6 +776,30 @@ class Trainer:
         else:
             loss.backward()
 
+        # =================================================================
+        # Gradient Monitoring (verify gradients flow to embeddings)
+        # =================================================================
+        grad_norms = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                # Track key parameter groups
+                if 'mu_embed' in name:
+                    grad_norms['grad/mu_embed'] = grad_norm
+                elif 'sigma_embed' in name or 'log_sigma' in name:
+                    grad_norms['grad/sigma_embed'] = grad_norm
+                elif 'phi_embed' in name:
+                    grad_norms['grad/phi_embed'] = grad_norm
+                elif 'out_proj' in name:
+                    grad_norms['grad/out_proj'] = grad_norm
+
+        # Add to metrics
+        metrics.update(grad_norms)
+
+        # Warn if embedding gradients are zero (broken gradient flow!)
+        if 'grad/mu_embed' in grad_norms and grad_norms['grad/mu_embed'] == 0.0:
+            print("[WARNING] mu_embed gradient is ZERO - gradient flow may be broken!")
+
         # Optimizer step (if accumulation complete)
         if (self.step + 1) % self.config.accumulation_steps == 0:
             # Gradient clipping
@@ -866,9 +890,16 @@ class Trainer:
                         elapsed = time.time() - start_time
                         tokens_per_sec = (self.step * self.config.batch_size * batch[0].shape[1]) / elapsed
 
+                        # Basic metrics
                         print(f"\nStep {self.step:6d} | Loss: {metrics['loss/total']:.4f} | "
                               f"CE: {metrics['loss/ce']:.4f} | Align: {metrics['loss/belief_align']:.4f} | "
                               f"LR: {metrics['lr']:.2e}")
+
+                        # Gradient norms (verify gradients are flowing!)
+                        grad_mu = metrics.get('grad/mu_embed', 0.0)
+                        grad_out = metrics.get('grad/out_proj', 0.0)
+                        grad_phi = metrics.get('grad/phi_embed', 0.0)
+                        print(f"         Grads | μ_embed: {grad_mu:.4f} | out_proj: {grad_out:.4f} | φ_embed: {grad_phi:.4f}")
 
                         if self.config.use_wandb and WANDB_AVAILABLE:
                             wandb.log(metrics, step=self.step)
