@@ -181,6 +181,32 @@ import sys
 
 Training shapes the prior landscape. The forward pass evolves beliefs through that landscape.
 
+### Position Encoding: μ not φ (Principled Design)
+
+**Critical**: Position is encoded in μ (belief mean), NOT in φ (gauge frame).
+
+| Component | Encodes | Type |
+|-----------|---------|------|
+| φ (gauge frame) | Token identity/type | Internal symmetry |
+| μ (belief mean) | Content + position | External information |
+| Ω (transport) | Frame relationships | Internal geometry |
+
+**Why this matters**:
+
+In gauge theory, φ represents **internal** degrees of freedom (how an agent "sees" the belief space). Position is **external** context (where in the sequence). Mixing position into φ conflates internal and external structure.
+
+**Gauge equivalence**: Same token at different positions should be gauge-equivalent:
+- Same φ (same token type) → same SO(3) orbit
+- Different μ (due to position encoding) → different beliefs
+- KL(q_i || Ω_ij · q_j) depends on belief content, not position
+
+**The old bug**: Position encoding was added to φ, but priors were computed before position was added. This created a mismatch:
+- Priors used φ_embed
+- Transport used φ_embed + φ_pos
+- Gauge equivalence was broken even for same-token beliefs
+
+**The fix**: Position encoding now goes to μ (like standard transformers). Transport Ω_ij depends only on token type, preserving gauge equivalence.
+
 ### Critical Notation: Priors (p) vs Momenta (π)
 
 **These are completely different objects living in different spaces:**

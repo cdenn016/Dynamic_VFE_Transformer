@@ -179,7 +179,20 @@ class GaugeTransformerLM(nn.Module):
             diagonal_covariance=diagonal_covariance,
         )
 
-        self.pos_encoding = GaugePositionalEncoding(
+        # =================================================================
+        # Position Encoding for μ (NOT φ)
+        # =================================================================
+        # PRINCIPLED DESIGN: Position is external context, not internal gauge.
+        # - φ (gauge frame) encodes token TYPE (internal symmetry)
+        # - μ (belief mean) encodes content + position (external information)
+        # This preserves gauge equivalence: same token at different positions
+        # are on the same SO(3) orbit, differing only in μ.
+        self.pos_encoding_mu = nn.Embedding(max_seq_len, embed_dim)
+        nn.init.normal_(self.pos_encoding_mu.weight, mean=0.0, std=0.02)
+
+        # Keep the old gauge position encoding for backward compatibility,
+        # but it won't be used in forward pass
+        self._legacy_pos_encoding = GaugePositionalEncoding(
             max_seq_len=max_seq_len,
             mode=pos_mode,
             scale=0.1,
@@ -299,20 +312,26 @@ class GaugeTransformerLM(nn.Module):
         # =================================================================
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
-        # Save initial embeddings as priors for variational FFN
+        # =================================================================
+        # 2. Add Position Encoding to μ (NOT φ)
+        # =================================================================
+        # PRINCIPLED: Position is external context, gauge (φ) is internal symmetry.
+        # This preserves gauge equivalence: same token at different positions
+        # remain on the same SO(3) orbit, differing only in μ.
+        positions = torch.arange(num_agents, device=device)
+        pos_embed = self.pos_encoding_mu(positions)  # (N, K)
+        mu_q = mu_q + pos_embed.unsqueeze(0)  # (B, N, K)
+
+        # Save embeddings (with position) as priors for variational FFN
         mu_prior = mu_q.clone()
 
         # Record embeddings for trajectory tracking
         if recorder is not None and recorder.enabled:
             recorder.record_embeddings(mu_q, sigma_q, phi)
 
-        # =================================================================
-        # 2. Add Agent-Index Encoding to Gauge Frames
-        # =================================================================
-        # This distinguishes agent roles, NOT spatial positions
-        # Use proper SO(3) composition (BCH formula) instead of simple addition
-        # to respect the Lie group structure: exp(φ + φ_pos) ≠ exp(φ)·exp(φ_pos)
-        phi = self.pos_encoding.compose(phi, num_agents, device=device)  # (B, N, 3)
+        # NOTE: φ is NOT modified by position encoding anymore.
+        # Transport Ω_ij = exp(φ_i·G)·exp(-φ_j·G) depends only on token TYPE,
+        # not position. This ensures gauge equivalence is preserved.
 
         # =================================================================
         # 3. Attention Mask (causal + optional sparsity)
@@ -408,11 +427,16 @@ class GaugeTransformerLM(nn.Module):
         # Embeddings
         mu_q, sigma_q, phi = self.token_embed(token_ids)
 
-        # Save initial embeddings as priors for variational FFN
+        # Add position encoding to μ (NOT φ)
+        # PRINCIPLED: Position is external context, gauge (φ) is internal symmetry.
+        positions = torch.arange(num_agents, device=device)
+        pos_embed = self.pos_encoding_mu(positions)  # (N, K)
+        mu_q = mu_q + pos_embed.unsqueeze(0)  # (B, N, K)
+
+        # Save embeddings (with position) as priors for variational FFN
         mu_prior = mu_q.clone()
 
-        # Position encoding (proper SO(3) composition)
-        phi = self.pos_encoding.compose(phi, num_agents, device=device)
+        # NOTE: φ is NOT modified - transport depends only on token type
 
         # Attention mask (causal + optional sparsity)
         mask = create_attention_mask(
