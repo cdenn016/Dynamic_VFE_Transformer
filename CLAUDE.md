@@ -9,6 +9,7 @@ Apply these when working on this codebase:
 - **Gauge Theory**: Symmetries, equivariance, parallel transport, irreps
 - **Hamiltonian Mechanics**: Symplectic structure, phase space, mass matrices
 - **Matrix/Linear Algebra**: Eigendecomposition, Kronecker products, matrix exponentials
+- **do not use linalg eigh**: unless absolutely necessary
 
 ## Code Standards
 
@@ -415,4 +416,5 @@ This is a **symmetry-based prior** implementing compression geometrically.
 | Hierarchy | Deep IB | VFE iterations | RG flow |
 
 **Key insight**: Emergent block structure in β_ij reveals which tokens carry redundant information about the target and can be safely merged. The dynamics discovers the optimal compression automatically.
+
 
